@@ -1,0 +1,259 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:'Poppins',sans-serif;
+}
+
+body{
+    background:#f4f7fc;
+}
+
+/* Main Layout */
+
+.container{
+    min-height:100vh;
+    display:flex;
+}
+
+/* Left Panel */
+
+.left-panel{
+    width:45%;
+    background:
+    linear-gradient(
+    rgba(15,23,42,.88),
+    rgba(37,99,235,.88)),
+    url("https://images.unsplash.com/photo-1455390582262-044cdead277a?w=1200");
+    background-size:cover;
+    background-position:center;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    color:white;
+}
+
+.overlay{
+    width:75%;
+}
+
+.overlay h1{
+    font-size:50px;
+    margin-bottom:20px;
+}
+
+.overlay p{
+    line-height:1.8;
+    margin-bottom:40px;
+    font-size:18px;
+}
+
+.benefits{
+    display:flex;
+    flex-direction:column;
+    gap:22px;
+}
+
+.benefit{
+    display:flex;
+    align-items:center;
+    gap:15px;
+    font-size:17px;
+}
+
+.benefit i{
+    font-size:22px;
+}
+
+/* Right Panel */
+
+.right-panel{
+    width:55%;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    padding:40px;
+    background:white;
+}
+
+.register-box{
+    width:650px;
+}
+
+.logo{
+    width:70px;
+    height:70px;
+    background:#2563eb;
+    color:white;
+    border-radius:50%;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    font-size:30px;
+    margin-bottom:20px;
+}
+
+.register-box h2{
+    color:#0f172a;
+    font-size:34px;
+}
+
+.subtitle{
+    color:#64748b;
+    margin-top:8px;
+    margin-bottom:30px;
+}
+
+/* Form */
+
+.row{
+    display:flex;
+    gap:20px;
+}
+
+.input-group{
+    width:100%;
+    margin-bottom:18px;
+}
+
+.input-group label{
+    display:block;
+    margin-bottom:8px;
+    font-weight:500;
+    color:#334155;
+}
+
+.input-group input,
+.input-group select{
+    width:100%;
+    padding:14px;
+    border:1px solid #dbe2ea;
+    border-radius:10px;
+    outline:none;
+    font-size:15px;
+}
+
+.input-group input:focus,
+.input-group select:focus{
+    border-color:#2563eb;
+}
+
+.checkbox{
+    display:flex;
+    gap:10px;
+    margin-top:10px;
+    margin-bottom:25px;
+    color:#475569;
+    font-size:14px;
+}
+
+.register-btn{
+    width:100%;
+    border:none;
+    background:#2563eb;
+    color:white;
+    padding:15px;
+    border-radius:10px;
+    font-size:16px;
+    font-weight:600;
+    cursor:pointer;
+    transition:.3s;
+}
+
+.register-btn:hover{
+    background:#1d4ed8;
+}
+
+/* Divider */
+
+.divider{
+    text-align:center;
+    margin:25px 0;
+    position:relative;
+}
+
+.divider::before{
+    content:'';
+    position:absolute;
+    left:0;
+    top:50%;
+    width:45%;
+    height:1px;
+    background:#ddd;
+}
+
+.divider::after{
+    content:'';
+    position:absolute;
+    right:0;
+    top:50%;
+    width:45%;
+    height:1px;
+    background:#ddd;
+}
+
+.divider span{
+    background:white;
+    padding:0 15px;
+    color:#888;
+}
+
+/* Google Button */
+
+.google-btn{
+    width:100%;
+    padding:14px;
+    border:1px solid #ddd;
+    background:white;
+    border-radius:10px;
+    cursor:pointer;
+    font-size:15px;
+    transition:.3s;
+}
+
+.google-btn:hover{
+    background:#f8fafc;
+}
+
+.google-btn i{
+    margin-right:10px;
+}
+
+/* Login Link */
+
+.login-link{
+    text-align:center;
+    margin-top:25px;
+    color:#64748b;
+}
+
+.login-link a{
+    color:#2563eb;
+    text-decoration:none;
+    font-weight:600;
+}
+
+/* Responsive */
+
+@media(max-width:992px){
+
+    .left-panel{
+        display:none;
+    }
+
+    .right-panel{
+        width:100%;
+    }
+
+    .register-box{
+        width:100%;
+        max-width:650px;
+    }
+
+    .row{
+        flex-direction:column;
+        gap:0;
+    }
+}
