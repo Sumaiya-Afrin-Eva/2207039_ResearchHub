@@ -7,24 +7,37 @@
 session_start();
 include_once 'db_connect.php';
 
-// Verify that the user is logged in as an Administrator
-if (!isset($_SESSION['user_id']) || $_SESSION['role_id'] != 1) {
+// Verify that the user is logged in as Admin or Researcher
+if (!isset($_SESSION['user_id']) || ($_SESSION['role_id'] != 1 && $_SESSION['role_id'] != 2)) {
     header("Location: ../frontend/login.php?error=" . urlencode("Unauthorized access."));
     exit();
 }
+
+$role_id = (int)$_SESSION['role_id'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $title            = trim($_POST['title'] ?? '');
     $abstract         = trim($_POST['abstract'] ?? '');
     $keywords         = trim($_POST['keywords'] ?? '');
     $publication_year = (int) trim($_POST['publication_year'] ?? date('Y'));
-    $researcher_id    = (int) trim($_POST['researcher_id'] ?? 0);
+    
+    // If researcher, primary researcher_id is their own session ID.
+    // If admin, it is passed via POST.
+    if ($role_id == 2) {
+        $researcher_id = (int)$_SESSION['user_id'];
+    } else {
+        $researcher_id = (int) trim($_POST['researcher_id'] ?? 0);
+    }
+    
     $co_authors       = trim($_POST['co_authors'] ?? '');
-    $admin_id         = (int) $_SESSION['user_id'];
+    $admin_id         = (int) $_SESSION['user_id']; // Logged in user ID for audit log
+
+    // Redirect targets
+    $redirect_url = ($role_id == 1) ? "../frontend/admin_dashboard.php" : "../frontend/researcher_dashboard.php";
 
     // Input Validation
     if (empty($title) || empty($abstract) || $researcher_id <= 0 || $publication_year <= 0) {
-        header("Location: ../frontend/admin_dashboard.php?error=" . urlencode("Title, Abstract, Researcher and Year are required."));
+        header("Location: " . $redirect_url . "?error=" . urlencode("Title, Abstract, and Year are required."));
         exit();
     }
 
@@ -63,17 +76,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!oci_execute($stid)) {
         $e = oci_error($stid);
         $clob->close();
-        header("Location: ../frontend/admin_dashboard.php?error=" . urlencode("Failed to add paper: " . $e['message']));
+        header("Location: " . $redirect_url . "?error=" . urlencode("Failed to add paper: " . $e['message']));
         exit();
     }
 
     $clob->close();
 
     // Success redirect
-    header("Location: ../frontend/admin_dashboard.php?success=" . urlencode("Research paper added successfully."));
+    header("Location: " . $redirect_url . "?success=" . urlencode("Research paper added successfully."));
     exit();
 } else {
-    header("Location: ../frontend/admin_dashboard.php");
+    $redirect_url = ($role_id == 1) ? "../frontend/admin_dashboard.php" : "../frontend/researcher_dashboard.php";
+    header("Location: " . $redirect_url);
     exit();
 }
 ?>
