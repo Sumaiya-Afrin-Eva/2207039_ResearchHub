@@ -7,23 +7,42 @@
 session_start();
 include_once 'db_connect.php';
 
-// Verify that the user is logged in as an Administrator
-if (!isset($_SESSION['user_id']) || $_SESSION['role_id'] != 1) {
+// Verify that the user is logged in as Admin or Researcher
+if (!isset($_SESSION['user_id']) || ($_SESSION['role_id'] != 1 && $_SESSION['role_id'] != 2)) {
     header("Location: ../frontend/login.php?error=" . urlencode("Unauthorized access."));
     exit();
 }
 
+$role_id = (int)$_SESSION['role_id'];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $title         = trim($_POST['title'] ?? '');
     $abstract      = trim($_POST['abstract'] ?? '');
-    $researcher_id = (int) trim($_POST['researcher_id'] ?? 0);
-    $dept_id       = (int) trim($_POST['department_id'] ?? 0);
+    
+    if ($role_id == 2) {
+        $researcher_id = (int)$_SESSION['user_id'];
+        
+        // Fetch researcher's department ID from database
+        $dept_query = "SELECT DEPARTMENT_ID FROM USERS WHERE USER_ID = :researcher_id";
+        $dept_stid = oci_parse($conn, $dept_query);
+        oci_bind_by_name($dept_stid, ':researcher_id', $researcher_id);
+        oci_execute($dept_stid);
+        $dept_row = oci_fetch_assoc($dept_stid);
+        $dept_id = $dept_row ? (int)$dept_row['DEPARTMENT_ID'] : 0;
+    } else {
+        $researcher_id = (int) trim($_POST['researcher_id'] ?? 0);
+        $dept_id       = (int) trim($_POST['department_id'] ?? 0);
+    }
+    
     $supervisor_id = (int) trim($_POST['supervisor_id'] ?? 0);
-    $admin_id      = (int) $_SESSION['user_id'];
+    $admin_id      = (int) $_SESSION['user_id']; // Logged in user ID for audit log
+
+    // Redirect targets
+    $redirect_url = ($role_id == 1) ? "../frontend/admin_dashboard.php" : "../frontend/researcher_dashboard.php";
 
     // Input Validation
     if (empty($title) || empty($abstract) || $researcher_id <= 0 || $dept_id <= 0 || $supervisor_id <= 0) {
-        header("Location: ../frontend/admin_dashboard.php?error=" . urlencode("All fields are required."));
+        header("Location: " . $redirect_url . "?error=" . urlencode("All fields are required."));
         exit();
     }
 
@@ -45,15 +64,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Bind values
     oci_bind_by_name($stid, ':title',         $title);
-    
-    // Bind CLOB abstract
-    $clob = oci_new_descriptor($conn, OCI_D_LOB);
-    oci_bind_by_name($stid, ':abstract',      $clob, -1, OCI_B_CLOB);
-    
     oci_bind_by_name($stid, ':researcher_id', $researcher_id);
     oci_bind_by_name($stid, ':dept_id',       $dept_id);
     oci_bind_by_name($stid, ':supervisor_id', $supervisor_id);
     oci_bind_by_name($stid, ':admin_id',      $admin_id);
+
+    // Bind CLOB abstract
+    $clob = oci_new_descriptor($conn, OCI_D_LOB);
+    oci_bind_by_name($stid, ':abstract',      $clob, -1, OCI_B_CLOB);
 
     // Write abstract content to LOB descriptor
     $clob->writeTemporary($abstract, OCI_TEMP_CLOB);
@@ -61,17 +79,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!oci_execute($stid)) {
         $e = oci_error($stid);
         $clob->close();
-        header("Location: ../frontend/admin_dashboard.php?error=" . urlencode("Failed to add thesis: " . $e['message']));
+        header("Location: " . $redirect_url . "?error=" . urlencode("Failed to add thesis: " . $e['message']));
         exit();
     }
 
     $clob->close();
 
     // Success redirect
-    header("Location: ../frontend/admin_dashboard.php?success=" . urlencode("Thesis added successfully."));
+    header("Location: " . $redirect_url . "?success=" . urlencode("Thesis submitted successfully."));
     exit();
 } else {
-    header("Location: ../frontend/admin_dashboard.php");
+    $redirect_url = ($role_id == 1) ? "../frontend/admin_dashboard.php" : "../frontend/researcher_dashboard.php";
+    header("Location: " . $redirect_url);
     exit();
 }
 ?>
