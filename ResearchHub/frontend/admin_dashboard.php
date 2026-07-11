@@ -121,6 +121,76 @@ $papers_table_sql = "
 ";
 $papers_table_stid = oci_parse($conn, $papers_table_sql);
 oci_execute($papers_table_stid);
+
+// Full reviews table data
+$reviews_table_sql = "
+    SELECT R.REVIEW_ID,
+           R.ASSIGNMENT_ID,
+           R.SCORE,
+           DBMS_LOB.SUBSTR(R.COMMENTS, 4000, 1) AS COMMENTS,
+           TO_CHAR(R.REVIEW_DATE, 'YYYY-MM-DD') AS REV_DATE,
+           R.RECOMMENDATION,
+           P.TITLE AS PAPER_TITLE,
+           U_REV.FIRST_NAME || ' ' || U_REV.LAST_NAME AS REVIEWER_NAME,
+           U_RES.FIRST_NAME || ' ' || U_RES.LAST_NAME AS RESEARCHER_NAME
+    FROM REVIEWS R
+    JOIN REVIEW_ASSIGNMENTS RA ON R.ASSIGNMENT_ID = RA.ASSIGNMENT_ID
+    JOIN PAPERS P ON RA.PAPER_ID = P.PAPER_ID
+    JOIN USERS U_REV ON RA.REVIEWER_ID = U_REV.USER_ID
+    JOIN USERS U_RES ON P.RESEARCHER_ID = U_RES.USER_ID
+    ORDER BY R.REVIEW_ID DESC
+";
+$reviews_table_stid = oci_parse($conn, $reviews_table_sql);
+oci_execute($reviews_table_stid);
+
+$reviews_list = [];
+while ($row = oci_fetch_assoc($reviews_table_stid)) {
+    $reviews_list[] = $row;
+}
+
+// Handle Assign Reviewer POST
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'assign_reviewer') {
+    $paper_id = isset($_POST['paper_id']) ? (int)$_POST['paper_id'] : 0;
+    $reviewer_id = isset($_POST['reviewer_id']) ? (int)$_POST['reviewer_id'] : 0;
+
+    if ($paper_id > 0 && $reviewer_id > 0) {
+        // Fetch next assignment ID
+        $id_sql = "SELECT COALESCE(MAX(ASSIGNMENT_ID), 0) + 1 AS NEXT_ID FROM REVIEW_ASSIGNMENTS";
+        $id_stid = oci_parse($conn, $id_sql);
+        oci_execute($id_stid);
+        $id_row = oci_fetch_assoc($id_stid);
+        $next_assignment_id = $id_row['NEXT_ID'];
+
+        // Call the ASSIGN_REVIEWER stored procedure inside a PL/SQL block
+        $stmt = oci_parse($conn, "BEGIN ASSIGN_REVIEWER(:assignment_id, :paper_id, :reviewer_id); END;");
+        oci_bind_by_name($stmt, ':assignment_id', $next_assignment_id);
+        oci_bind_by_name($stmt, ':paper_id', $paper_id);
+        oci_bind_by_name($stmt, ':reviewer_id', $reviewer_id);
+
+        $r = oci_execute($stmt);
+        if ($r) {
+            header("Location: admin_dashboard.php?success=" . urlencode("Reviewer assigned successfully."));
+            exit();
+        } else {
+            $e = oci_error($stmt);
+            header("Location: admin_dashboard.php?error=" . urlencode("Failed to assign reviewer: " . $e['message']));
+            exit();
+        }
+    } else {
+        header("Location: admin_dashboard.php?error=" . urlencode("Invalid paper or reviewer selection."));
+        exit();
+    }
+}
+
+// Query for reviewers list dropdown
+$reviewers_dropdown_sql = "SELECT USER_ID, FIRST_NAME || ' ' || LAST_NAME AS FULL_NAME FROM USERS WHERE ROLE_ID = 4 AND STATUS = 'ACTIVE' ORDER BY FIRST_NAME, LAST_NAME";
+$reviewers_dropdown_stid = oci_parse($conn, $reviewers_dropdown_sql);
+oci_execute($reviewers_dropdown_stid);
+
+$reviewers_dropdown_list = [];
+while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
+    $reviewers_dropdown_list[] = $row;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -190,8 +260,8 @@ oci_execute($papers_table_stid);
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-reviews">
+                <a href="#" onclick="showSection('reviews'); return false;">
                     <i class="fas fa-star"></i>
                     Reviews
                 </a>
@@ -649,6 +719,11 @@ oci_execute($papers_table_stid);
                                 </span>
                             </td>
                             <td>
+                                <button class="add-btn" style="padding: 4px 8px; font-size: 12px; margin-right: 4px; background: #0ea5e9; border: none; border-radius: 4px; color: white; cursor: pointer;"
+                                    onclick="openAssignReviewerModal(this)"
+                                    data-paper-id="<?php echo (int)$paper['PAPER_ID']; ?>"
+                                    data-title="<?php echo htmlspecialchars($paper['TITLE'], ENT_QUOTES); ?>"
+                                >Assign</button>
                                 <button class="edit"
                                     onclick="openEditPaperModal(this)"
                                     data-paper-id="<?php echo (int)$paper['PAPER_ID']; ?>"
@@ -673,8 +748,105 @@ oci_execute($papers_table_stid);
 
         </section>
 
+        <!-- ─── Reviews Section ────────────────────────────── -->
+        <section class="table-section page-view" id="view-reviews" style="display:none;">
+
+            <div class="table-header">
+                <h3>Reviews</h3>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Paper Title</th>
+                        <th>Researcher</th>
+                        <th>Reviewer</th>
+                        <th>Score</th>
+                        <th>Recommendation</th>
+                        <th>Comments</th>
+                        <th>Review Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($reviews_list)): ?>
+                        <tr>
+                            <td colspan="8" style="text-align:center; color:#94a3b8; font-style:italic; padding:20px;">No reviews submitted yet.</td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($reviews_list as $rev): ?>
+                            <tr>
+                                <td><?php echo (int)$rev['REVIEW_ID']; ?></td>
+                                <td style="font-weight:600; color:#0f172a; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><?php echo htmlspecialchars($rev['PAPER_TITLE']); ?></td>
+                                <td><?php echo htmlspecialchars($rev['RESEARCHER_NAME']); ?></td>
+                                <td><?php echo htmlspecialchars($rev['REVIEWER_NAME']); ?></td>
+                                <td style="font-weight:600; color:#2563eb;"><?php echo htmlspecialchars($rev['SCORE']); ?>/10</td>
+                                <td>
+                                    <?php 
+                                        $rec = $rev['RECOMMENDATION'];
+                                        $status_class = 'status-review';
+                                        if ($rec === 'ACCEPT' || $rec === 'MINOR REVISION') {
+                                            $status_class = 'status-approved';
+                                        } elseif ($rec === 'REJECT') {
+                                            $status_class = 'status-rejected';
+                                        }
+                                    ?>
+                                    <span class="status-badge <?php echo $status_class; ?>">
+                                        <?php echo htmlspecialchars($rec); ?>
+                                    </span>
+                                </td>
+                                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($rev['COMMENTS']); ?>">
+                                    <?php echo htmlspecialchars($rev['COMMENTS']); ?>
+                                </td>
+                                <td><?php echo htmlspecialchars($rev['REV_DATE']); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+
+        </section>
+
     </main>
 
+</div>
+
+<!-- ── Assign Reviewer Modal ────────────────────────── -->
+<div class="modal-overlay" id="assignReviewerModal">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h3>Assign Reviewer to Paper</h3>
+            <button class="close-btn" onclick="closeAssignReviewerModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="modal-form" action="" method="POST">
+                <input type="hidden" name="action" value="assign_reviewer">
+                <input type="hidden" name="paper_id" id="assign_paper_id">
+
+                <div class="form-group">
+                    <label>Paper Title</label>
+                    <input type="text" id="assign_paper_title" readonly style="background:#f1f5f9; cursor:not-allowed;">
+                </div>
+
+                <div class="form-group">
+                    <label for="assign_reviewer_id">Select Reviewer</label>
+                    <select id="assign_reviewer_id" name="reviewer_id" required>
+                        <option value="">Select Reviewer</option>
+                        <?php foreach ($reviewers_dropdown_list as $rev): ?>
+                            <option value="<?php echo htmlspecialchars($rev['USER_ID']); ?>">
+                                <?php echo htmlspecialchars($rev['FULL_NAME']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn-cancel" onclick="closeAssignReviewerModal()">Cancel</button>
+                    <button type="submit" class="btn-submit">Assign Reviewer</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 <!-- ── Add Paper Modal ──────────────────────────────── -->
@@ -935,52 +1107,41 @@ function showSection(section) {
         activeLi.classList.add('active');
     }
 
-    // Toggle visibility of sections
+    var views = [
+        'view-dashboard',
+        'view-dashboard-actions',
+        'view-users',
+        'view-analytics',
+        'view-logs',
+        'view-departments',
+        'view-theses',
+        'view-papers',
+        'view-reviews'
+    ];
+
+    // Hide all views first
+    views.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    });
+
+    // Toggle visibility of sections based on selection
     if (section === 'dashboard') {
-        document.getElementById('view-dashboard').style.display = 'grid';
-        document.getElementById('view-dashboard-actions').style.display = 'block';
-        document.getElementById('view-users').style.display = 'block';
-        document.getElementById('view-analytics').style.display = 'grid';
-        document.getElementById('view-logs').style.display = 'block';
-        document.getElementById('view-departments').style.display = 'none';
-        document.getElementById('view-theses').style.display = 'none';
-        document.getElementById('view-papers').style.display = 'none';
+        if (document.getElementById('view-dashboard')) document.getElementById('view-dashboard').style.display = 'grid';
+        if (document.getElementById('view-dashboard-actions')) document.getElementById('view-dashboard-actions').style.display = 'block';
+        if (document.getElementById('view-users')) document.getElementById('view-users').style.display = 'block';
+        if (document.getElementById('view-analytics')) document.getElementById('view-analytics').style.display = 'grid';
+        if (document.getElementById('view-logs')) document.getElementById('view-logs').style.display = 'block';
     } else if (section === 'users') {
-        document.getElementById('view-dashboard').style.display = 'none';
-        document.getElementById('view-dashboard-actions').style.display = 'none';
-        document.getElementById('view-users').style.display = 'block';
-        document.getElementById('view-analytics').style.display = 'none';
-        document.getElementById('view-logs').style.display = 'none';
-        document.getElementById('view-departments').style.display = 'none';
-        document.getElementById('view-theses').style.display = 'none';
-        document.getElementById('view-papers').style.display = 'none';
+        if (document.getElementById('view-users')) document.getElementById('view-users').style.display = 'block';
     } else if (section === 'departments') {
-        document.getElementById('view-dashboard').style.display = 'none';
-        document.getElementById('view-dashboard-actions').style.display = 'none';
-        document.getElementById('view-users').style.display = 'none';
-        document.getElementById('view-analytics').style.display = 'none';
-        document.getElementById('view-logs').style.display = 'none';
-        document.getElementById('view-departments').style.display = 'block';
-        document.getElementById('view-theses').style.display = 'none';
-        document.getElementById('view-papers').style.display = 'none';
+        if (document.getElementById('view-departments')) document.getElementById('view-departments').style.display = 'block';
     } else if (section === 'theses') {
-        document.getElementById('view-dashboard').style.display = 'none';
-        document.getElementById('view-dashboard-actions').style.display = 'none';
-        document.getElementById('view-users').style.display = 'none';
-        document.getElementById('view-analytics').style.display = 'none';
-        document.getElementById('view-logs').style.display = 'none';
-        document.getElementById('view-departments').style.display = 'none';
-        document.getElementById('view-theses').style.display = 'block';
-        document.getElementById('view-papers').style.display = 'none';
+        if (document.getElementById('view-theses')) document.getElementById('view-theses').style.display = 'block';
     } else if (section === 'papers') {
-        document.getElementById('view-dashboard').style.display = 'none';
-        document.getElementById('view-dashboard-actions').style.display = 'none';
-        document.getElementById('view-users').style.display = 'none';
-        document.getElementById('view-analytics').style.display = 'none';
-        document.getElementById('view-logs').style.display = 'none';
-        document.getElementById('view-departments').style.display = 'none';
-        document.getElementById('view-theses').style.display = 'none';
-        document.getElementById('view-papers').style.display = 'block';
+        if (document.getElementById('view-papers')) document.getElementById('view-papers').style.display = 'block';
+    } else if (section === 'reviews') {
+        if (document.getElementById('view-reviews')) document.getElementById('view-reviews').style.display = 'block';
     }
 }
 
@@ -1125,6 +1286,18 @@ function openEditPaperModal(btn) {
     document.getElementById('paper_co_authors').value       = d.coAuthors       || '';
 
     if (paperModal) paperModal.classList.add('active');
+}
+/* ─── Global: Assign Reviewer Modal handlers ─── */
+function openAssignReviewerModal(btn) {
+    var paperId = btn.dataset.paperId;
+    var paperTitle = btn.dataset.title;
+    document.getElementById('assign_paper_id').value = paperId;
+    document.getElementById('assign_paper_title').value = paperTitle;
+    document.getElementById('assignReviewerModal').classList.add('active');
+}
+
+function closeAssignReviewerModal() {
+    document.getElementById('assignReviewerModal').classList.remove('active');
 }
 
 /* ─── Global: Add Thesis Modal handlers ─── */
