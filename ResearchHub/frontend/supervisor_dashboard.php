@@ -116,6 +116,68 @@ $theses_review_sql = "SELECT T.THESIS_ID, T.TITLE, T.STATUS, T.VERSION_NO, CONCA
 $theses_review_stid = oci_parse($conn, $theses_review_sql);
 oci_bind_by_name($theses_review_stid, ':supervisor_id', $supervisor_id);
 oci_execute($theses_review_stid);
+
+// 8. Fetch papers for monitoring
+$monitored_papers_sql = "
+    SELECT P.PAPER_ID,
+           P.TITLE,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS RESEARCHER_NAME,
+           P.PUBLICATION_YEAR,
+           P.STATUS,
+           TO_CHAR(P.SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE,
+           R.SCORE,
+           R.RECOMMENDATION
+    FROM PAPERS P
+    JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID
+    JOIN (
+        SELECT DISTINCT T.RESEARCHER_ID
+        FROM THESIS_SUPERVISIONS TS
+        JOIN THESES T ON TS.THESIS_ID = T.THESIS_ID
+        WHERE TS.SUPERVISOR_ID = :supervisor_id
+    ) SR ON P.RESEARCHER_ID = SR.RESEARCHER_ID
+    LEFT JOIN REVIEW_ASSIGNMENTS RA ON P.PAPER_ID = RA.PAPER_ID
+    LEFT JOIN REVIEWS R ON RA.ASSIGNMENT_ID = R.ASSIGNMENT_ID
+    ORDER BY P.SUBMISSION_DATE DESC
+";
+$monitored_papers_stid = oci_parse($conn, $monitored_papers_sql);
+oci_bind_by_name($monitored_papers_stid, ':supervisor_id', $supervisor_id);
+oci_execute($monitored_papers_stid);
+
+$monitored_papers = [];
+while ($row = oci_fetch_assoc($monitored_papers_stid)) {
+    $monitored_papers[] = $row;
+}
+
+// 9. Fetch feedback and reviews for monitored researchers
+$monitored_reviews_sql = "
+    SELECT P.TITLE AS PAPER_TITLE,
+           U_RES.FIRST_NAME || ' ' || U_RES.LAST_NAME AS RESEARCHER_NAME,
+           U_REV.FIRST_NAME || ' ' || U_REV.LAST_NAME AS REVIEWER_NAME,
+           R.SCORE,
+           DBMS_LOB.SUBSTR(R.COMMENTS, 4000, 1) AS COMMENTS,
+           R.RECOMMENDATION,
+           TO_CHAR(R.REVIEW_DATE, 'DD Mon YYYY') AS REV_DATE
+    FROM REVIEWS R
+    JOIN REVIEW_ASSIGNMENTS RA ON R.ASSIGNMENT_ID = RA.ASSIGNMENT_ID
+    JOIN PAPERS P ON RA.PAPER_ID = P.PAPER_ID
+    JOIN USERS U_RES ON P.RESEARCHER_ID = U_RES.USER_ID
+    JOIN USERS U_REV ON RA.REVIEWER_ID = U_REV.USER_ID
+    JOIN (
+        SELECT DISTINCT T.RESEARCHER_ID
+        FROM THESIS_SUPERVISIONS TS
+        JOIN THESES T ON TS.THESIS_ID = T.THESIS_ID
+        WHERE TS.SUPERVISOR_ID = :supervisor_id
+    ) SR ON P.RESEARCHER_ID = SR.RESEARCHER_ID
+    ORDER BY R.REVIEW_DATE DESC
+";
+$monitored_reviews_stid = oci_parse($conn, $monitored_reviews_sql);
+oci_bind_by_name($monitored_reviews_stid, ':supervisor_id', $supervisor_id);
+oci_execute($monitored_reviews_stid);
+
+$monitored_reviews = [];
+while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
+    $monitored_reviews[] = $row;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -166,8 +228,8 @@ oci_execute($theses_review_stid);
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-paper-monitoring">
+                <a href="#" onclick="showSection('paper-monitoring'); return false;">
                     <i class="fas fa-file-alt"></i>
                     Paper Monitoring
                 </a>
@@ -180,8 +242,8 @@ oci_execute($theses_review_stid);
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-feedback">
+                <a href="#" onclick="showSection('feedback'); return false;">
                     <i class="fas fa-comments"></i>
                     Feedback
                 </a>
@@ -482,6 +544,110 @@ oci_execute($theses_review_stid);
 
         </section>
 
+        <!-- Paper Monitoring -->
+        <section class="table-section" id="view-paper-monitoring" style="display:none;">
+            <div class="section-header">
+                <h3>Paper Monitoring</h3>
+            </div>
+            <table>
+                <thead>
+                <tr>
+                    <th>Paper Title</th>
+                    <th>Researcher</th>
+                    <th>Year</th>
+                    <th>Submission Date</th>
+                    <th>Review Score</th>
+                    <th>Recommendation</th>
+                    <th>Status</th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php if (empty($monitored_papers)): ?>
+                    <tr>
+                        <td colspan="7" style="text-align:center; color:#94a3b8; font-style:italic;">No papers submitted by your assigned researchers yet.</td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($monitored_papers as $paper): ?>
+                        <tr>
+                            <td style="font-weight:600; color:#0f172a;"><?php echo htmlspecialchars($paper['TITLE']); ?></td>
+                            <td><?php echo htmlspecialchars($paper['RESEARCHER_NAME']); ?></td>
+                            <td><?php echo htmlspecialchars($paper['PUBLICATION_YEAR']); ?></td>
+                            <td><?php echo htmlspecialchars($paper['SUB_DATE']); ?></td>
+                            <td style="font-weight:600; color:#2563eb;">
+                                <?php echo $paper['SCORE'] !== null ? htmlspecialchars($paper['SCORE']) . '/10' : '-'; ?>
+                            </td>
+                            <td>
+                                <?php 
+                                $rec = $paper['RECOMMENDATION'];
+                                if ($rec) {
+                                    $rec_class = ($rec === 'ACCEPT' || $rec === 'MINOR REVISION') ? 'completed' : (($rec === 'REJECT') ? 'rejected' : 'pending');
+                                    echo '<span class="' . $rec_class . '">' . htmlspecialchars($rec) . '</span>';
+                                } else {
+                                    echo '-';
+                                }
+                                ?>
+                            </td>
+                            <td>
+                                <?php 
+                                $stat = $paper['STATUS'];
+                                $stat_class = 'pending';
+                                if ($stat === 'ACCEPTED' || $stat === 'PUBLISHED') $stat_class = 'completed';
+                                elseif ($stat === 'REJECTED') $stat_class = 'rejected';
+                                ?>
+                                <span class="<?php echo $stat_class; ?>"><?php echo htmlspecialchars($stat); ?></span>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Feedback & Reviews -->
+        <section class="table-section" id="view-feedback" style="display:none;">
+            <div class="section-header">
+                <h3>Reviewer Feedback & Comments</h3>
+            </div>
+            <table>
+                <thead>
+                <tr>
+                    <th>Paper Title</th>
+                    <th>Researcher</th>
+                    <th>Reviewer</th>
+                    <th>Score</th>
+                    <th>Recommendation</th>
+                    <th>Comments</th>
+                    <th>Review Date</th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php if (empty($monitored_reviews)): ?>
+                    <tr>
+                        <td colspan="7" style="text-align:center; color:#94a3b8; font-style:italic;">No reviewer reviews or feedback submitted yet.</td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($monitored_reviews as $rev): ?>
+                        <tr>
+                            <td style="font-weight:600; color:#0f172a;"><?php echo htmlspecialchars($rev['PAPER_TITLE']); ?></td>
+                            <td><?php echo htmlspecialchars($rev['RESEARCHER_NAME']); ?></td>
+                            <td><?php echo htmlspecialchars($rev['REVIEWER_NAME']); ?></td>
+                            <td style="font-weight:600; color:#2563eb;"><?php echo htmlspecialchars($rev['SCORE']); ?>/10</td>
+                            <td>
+                                <?php 
+                                $rec = $rev['RECOMMENDATION'];
+                                $rec_class = ($rec === 'ACCEPT' || $rec === 'MINOR REVISION') ? 'completed' : (($rec === 'REJECT') ? 'rejected' : 'pending');
+                                ?>
+                                <span class="<?php echo $rec_class; ?>"><?php echo htmlspecialchars($rec); ?></span>
+                            </td>
+                            <td><?php echo htmlspecialchars($rev['COMMENTS']); ?></td>
+                            <td><?php echo htmlspecialchars($rev['REV_DATE']); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                </tbody>
+            </table>
+        </section>
+
     </main>
 
 </div>
@@ -499,6 +665,18 @@ function showSection(section) {
     var viewApprovals = document.getElementById('view-approvals');
     var viewWorkload = document.getElementById('view-workload');
     var viewThesisReviews = document.getElementById('view-thesis-reviews');
+    var viewPaperMonitoring = document.getElementById('view-paper-monitoring');
+    var viewFeedback = document.getElementById('view-feedback');
+
+    // Hide all views first
+    if (viewStats) viewStats.style.display = 'none';
+    if (viewActions) viewActions.style.display = 'none';
+    if (viewTable) viewTable.style.display = 'none';
+    if (viewApprovals) viewApprovals.style.display = 'none';
+    if (viewWorkload) viewWorkload.style.display = 'none';
+    if (viewThesisReviews) viewThesisReviews.style.display = 'none';
+    if (viewPaperMonitoring) viewPaperMonitoring.style.display = 'none';
+    if (viewFeedback) viewFeedback.style.display = 'none';
 
     if (section === 'dashboard') {
         var navDash = document.getElementById('nav-dashboard');
@@ -509,29 +687,26 @@ function showSection(section) {
         if (viewTable) viewTable.style.display = 'block';
         if (viewApprovals) viewApprovals.style.display = 'block';
         if (viewWorkload) viewWorkload.style.display = 'block';
-        if (viewThesisReviews) viewThesisReviews.style.display = 'none';
 
     } else if (section === 'researchers') {
         var navRes = document.getElementById('nav-researchers');
         if (navRes) navRes.classList.add('active');
-
-        if (viewStats) viewStats.style.display = 'none';
-        if (viewActions) viewActions.style.display = 'none';
         if (viewTable) viewTable.style.display = 'block';
-        if (viewApprovals) viewApprovals.style.display = 'none';
-        if (viewWorkload) viewWorkload.style.display = 'none';
-        if (viewThesisReviews) viewThesisReviews.style.display = 'none';
 
     } else if (section === 'reviews') {
         var navReviews = document.getElementById('nav-reviews');
         if (navReviews) navReviews.classList.add('active');
-
-        if (viewStats) viewStats.style.display = 'none';
-        if (viewActions) viewActions.style.display = 'none';
-        if (viewTable) viewTable.style.display = 'none';
-        if (viewApprovals) viewApprovals.style.display = 'none';
-        if (viewWorkload) viewWorkload.style.display = 'none';
         if (viewThesisReviews) viewThesisReviews.style.display = 'block';
+
+    } else if (section === 'paper-monitoring') {
+        var navPaperMon = document.getElementById('nav-paper-monitoring');
+        if (navPaperMon) navPaperMon.classList.add('active');
+        if (viewPaperMonitoring) viewPaperMonitoring.style.display = 'block';
+
+    } else if (section === 'feedback') {
+        var navFeed = document.getElementById('nav-feedback');
+        if (navFeed) navFeed.classList.add('active');
+        if (viewFeedback) viewFeedback.style.display = 'block';
     }
 }
 </script>
