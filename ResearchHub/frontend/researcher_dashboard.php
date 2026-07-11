@@ -46,6 +46,30 @@ while ($row = oci_fetch_assoc($submissions_stid)) {
     $all_submissions[] = $row;
 }
 
+// Fetch reviews and feedback for the researcher's papers
+$reviews_sql = "
+    SELECT P.TITLE, 
+           R.SCORE, 
+           DBMS_LOB.SUBSTR(R.COMMENTS, 4000, 1) AS COMMENTS, 
+           R.RECOMMENDATION, 
+           TO_CHAR(R.REVIEW_DATE, 'DD Mon YYYY') AS REV_DATE,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS REVIEWER_NAME
+    FROM REVIEWS R
+    JOIN REVIEW_ASSIGNMENTS RA ON R.ASSIGNMENT_ID = RA.ASSIGNMENT_ID
+    JOIN PAPERS P ON RA.PAPER_ID = P.PAPER_ID
+    JOIN USERS U ON RA.REVIEWER_ID = U.USER_ID
+    WHERE P.RESEARCHER_ID = :researcher_id
+    ORDER BY R.REVIEW_DATE DESC
+";
+$reviews_stid = oci_parse($conn, $reviews_sql);
+oci_bind_by_name($reviews_stid, ':researcher_id', $researcher_id);
+oci_execute($reviews_stid);
+
+$reviews_list = [];
+while ($row = oci_fetch_assoc($reviews_stid)) {
+    $reviews_list[] = $row;
+}
+
 // 3. Fetch thesis progress
 $progress_sql = "
     SELECT TITLE,
@@ -323,8 +347,8 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-reviews">
+                <a href="#" onclick="showSection('reviews'); return false;">
                     <i class="fas fa-comments"></i>
                     Reviews & Feedback
                 </a>
@@ -539,8 +563,54 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
             </div>
 
         </section>
-
         </div> <!-- End of home-section -->
+
+        <!-- Reviews & Feedback Section -->
+        <div id="reviews-section" style="display: none;">
+            <section class="table-section">
+                <div class="section-header">
+                    <h3>Reviews & Feedback</h3>
+                </div>
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Paper Title</th>
+                        <th>Reviewer</th>
+                        <th>Score</th>
+                        <th>Recommendation</th>
+                        <th>Comments</th>
+                        <th>Review Date</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php if (empty($reviews_list)): ?>
+                        <tr>
+                            <td colspan="6" style="text-align:center; color:#94a3b8; font-style:italic;">No reviews or feedback received yet.</td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($reviews_list as $rev): ?>
+                            <tr>
+                                <td style="font-weight:600; color:#0f172a;"><?php echo htmlspecialchars($rev['TITLE']); ?></td>
+                                <td><?php echo htmlspecialchars($rev['REVIEWER_NAME']); ?></td>
+                                <td style="font-weight:600; color:#2563eb;"><?php echo htmlspecialchars($rev['SCORE']); ?>/10</td>
+                                <td>
+                                    <?php 
+                                    $rec = $rev['RECOMMENDATION'];
+                                    $rec_class = 'pending';
+                                    if ($rec === 'ACCEPT' || $rec === 'MINOR REVISION') $rec_class = 'completed';
+                                    elseif ($rec === 'REJECT') $rec_class = 'rejected';
+                                    ?>
+                                    <span class="<?php echo $rec_class; ?>"><?php echo htmlspecialchars($rec); ?></span>
+                                </td>
+                                <td><?php echo htmlspecialchars($rev['COMMENTS']); ?></td>
+                                <td><?php echo htmlspecialchars($rev['REV_DATE']); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </section>
+        </div>
 
         <!-- My Submissions Full List Section -->
         <div id="submissions-section" style="display: none;">
@@ -801,10 +871,16 @@ function showSection(sectionId) {
     document.getElementById('home-section').style.display = 'none';
     document.getElementById('submissions-section').style.display = 'none';
     document.getElementById('search-section').style.display = 'none';
+    if (document.getElementById('reviews-section')) {
+        document.getElementById('reviews-section').style.display = 'none';
+    }
     
     document.getElementById('nav-home').classList.remove('active');
     document.getElementById('nav-submissions').classList.remove('active');
     document.getElementById('nav-search').classList.remove('active');
+    if (document.getElementById('nav-reviews')) {
+        document.getElementById('nav-reviews').classList.remove('active');
+    }
     
     if (sectionId === 'home') {
         document.getElementById('home-section').style.display = 'block';
@@ -815,6 +891,13 @@ function showSection(sectionId) {
     } else if (sectionId === 'search') {
         document.getElementById('search-section').style.display = 'block';
         document.getElementById('nav-search').classList.add('active');
+    } else if (sectionId === 'reviews') {
+        if (document.getElementById('reviews-section')) {
+            document.getElementById('reviews-section').style.display = 'block';
+        }
+        if (document.getElementById('nav-reviews')) {
+            document.getElementById('nav-reviews').classList.add('active');
+        }
     }
 }
 
