@@ -36,18 +36,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['first_name'] = $row['FIRST_NAME'];
             $_SESSION['last_name'] = $row['LAST_NAME'];
 
-            // Log the login activity in AUDIT_LOGS
+            // Log the login activity in AUDIT_LOGS using database procedure
             $log_sql = "SELECT COALESCE(MAX(LOG_ID), 0) + 1 AS NEXT_ID FROM AUDIT_LOGS";
             $log_stid = oci_parse($conn, $log_sql);
             oci_execute($log_stid);
             $log_row = oci_fetch_assoc($log_stid);
             $next_log_id = $log_row['NEXT_ID'];
 
-            $audit_sql = "
-                INSERT INTO AUDIT_LOGS (LOG_ID, USER_ID, ACTION_TYPE, TABLE_NAME, ACTION_DATE, DESCRIPTION)
-                VALUES (:log_id, :user_id, 'LOGIN', 'USERS', SYSDATE, 'User logged in successfully')
+            $plsql = "
+            BEGIN
+                ADD_AUDIT_LOG(
+                    P_LOG_ID      => :log_id,
+                    P_USER_ID     => :user_id,
+                    P_ACTION_TYPE => 'LOGIN',
+                    P_TABLE_NAME  => 'USERS',
+                    P_DESCRIPTION => 'User logged in successfully'
+                );
+            END;
             ";
-            $audit_stid = oci_parse($conn, $audit_sql);
+            $audit_stid = oci_parse($conn, $plsql);
             oci_bind_by_name($audit_stid, ":log_id", $next_log_id);
             oci_bind_by_name($audit_stid, ":user_id", $row['USER_ID']);
             oci_execute($audit_stid);
