@@ -273,6 +273,27 @@ while ($row = oci_fetch_assoc($top_researchers_stid)) {
     $top_researchers_list[] = $row;
 }
 
+// Query for audit logs
+$audit_logs_sql = "
+    SELECT L.LOG_ID,
+           L.USER_ID,
+           COALESCE(U.FIRST_NAME || ' ' || U.LAST_NAME, 'System / Trigger') AS USER_NAME,
+           L.ACTION_TYPE,
+           L.TABLE_NAME,
+           TO_CHAR(L.ACTION_DATE, 'DD Mon YYYY HH24:MI:SS') AS ACTION_TIME,
+           L.DESCRIPTION
+    FROM AUDIT_LOGS L
+    LEFT JOIN USERS U ON L.USER_ID = U.USER_ID
+    ORDER BY L.ACTION_DATE DESC, L.LOG_ID DESC
+";
+$audit_logs_stid = oci_parse($conn, $audit_logs_sql);
+oci_execute($audit_logs_stid);
+
+$audit_logs_list = [];
+while ($row = oci_fetch_assoc($audit_logs_stid)) {
+    $audit_logs_list[] = $row;
+}
+
 // Handle Assign Reviewer POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'assign_reviewer') {
     $paper_id = isset($_POST['paper_id']) ? (int)$_POST['paper_id'] : 0;
@@ -399,8 +420,8 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-logs">
+                <a href="#" onclick="showSection('logs'); return false;">
                     <i class="fas fa-history"></i>
                     Audit Logs
                 </a>
@@ -788,25 +809,24 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
 
             <h3>Recent Audit Logs</h3>
 
-            <div class="log-item">
-                Admin updated Research Paper #105
-                <span>2 mins ago</span>
-            </div>
-
-            <div class="log-item">
-                New Reviewer Account Created
-                <span>12 mins ago</span>
-            </div>
-
-            <div class="log-item">
-                Department Information Modified
-                <span>25 mins ago</span>
-            </div>
-
-            <div class="log-item">
-                User Account Deleted
-                <span>1 hour ago</span>
-            </div>
+            <?php if (empty($audit_logs_list)): ?>
+                <div class="log-item">
+                    <span>No audit logs found.</span>
+                    <span>-</span>
+                </div>
+            <?php else: ?>
+                <?php foreach ($audit_logs_list as $log): ?>
+                    <div class="log-item">
+                        <div>
+                            <strong style="color: #0f172a;"><?php echo htmlspecialchars($log['USER_NAME']); ?></strong> 
+                            performed <span style="font-weight:600; color:#2563eb;"><?php echo htmlspecialchars($log['ACTION_TYPE']); ?></span> 
+                            on <span style="font-weight:600; color:#475569;"><?php echo htmlspecialchars($log['TABLE_NAME']); ?></span>: 
+                            <span style="color: #334155;"><?php echo htmlspecialchars($log['DESCRIPTION']); ?></span>
+                        </div>
+                        <span style="font-size:13px; color:#64748b;"><?php echo htmlspecialchars($log['ACTION_TIME']); ?></span>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
 
         </section>
 
@@ -1457,6 +1477,8 @@ function showSection(section) {
         if (document.getElementById('view-reviews')) document.getElementById('view-reviews').style.display = 'block';
     } else if (section === 'analytics') {
         if (document.getElementById('view-analytics-detail')) document.getElementById('view-analytics-detail').style.display = 'block';
+    } else if (section === 'logs') {
+        if (document.getElementById('view-logs')) document.getElementById('view-logs').style.display = 'block';
     }
 }
 
