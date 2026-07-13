@@ -49,6 +49,21 @@ $roles_sql = "SELECT ROLE_ID, ROLE_NAME FROM ROLE ORDER BY ROLE_ID";
 $roles_stid = oci_parse($conn, $roles_sql);
 oci_execute($roles_stid);
 
+$roles_table_sql = "
+    SELECT R.ROLE_ID,
+           R.ROLE_NAME,
+           (SELECT COUNT(*) FROM USERS U WHERE U.ROLE_ID = R.ROLE_ID) AS MEMBER_COUNT
+    FROM ROLE R
+    ORDER BY R.ROLE_ID
+";
+$roles_table_stid = oci_parse($conn, $roles_table_sql);
+oci_execute($roles_table_stid);
+
+$roles_list = [];
+while ($row = oci_fetch_assoc($roles_table_stid)) {
+    $roles_list[] = $row;
+}
+
 $depts_sql = "SELECT DEPARTMENT_ID, DEPARTMENT_NAME FROM DEPARTMENTS ORDER BY DEPARTMENT_NAME";
 $depts_stid = oci_parse($conn, $depts_sql);
 oci_execute($depts_stid);
@@ -281,6 +296,7 @@ $audit_logs_sql = "
            L.ACTION_TYPE,
            L.TABLE_NAME,
            TO_CHAR(L.ACTION_DATE, 'DD Mon YYYY HH24:MI:SS') AS ACTION_TIME,
+           TO_CHAR(L.ACTION_DATE, 'YYYY-MM-DD HH24:MI:SS') AS ACTION_TIME_UTC,
            L.DESCRIPTION
     FROM AUDIT_LOGS L
     LEFT JOIN USERS U ON L.USER_ID = U.USER_ID
@@ -288,10 +304,158 @@ $audit_logs_sql = "
 ";
 $audit_logs_stid = oci_parse($conn, $audit_logs_sql);
 oci_execute($audit_logs_stid);
-
 $audit_logs_list = [];
 while ($row = oci_fetch_assoc($audit_logs_stid)) {
     $audit_logs_list[] = $row;
+}
+
+// --- Search Section Queries ---
+
+// Fetch departments for search dropdown
+$search_depts_sql = "SELECT DEPARTMENT_ID, DEPARTMENT_NAME FROM DEPARTMENTS ORDER BY DEPARTMENT_NAME";
+$search_depts_stid = oci_parse($conn, $search_depts_sql);
+oci_execute($search_depts_stid);
+$search_depts = [];
+while ($row = oci_fetch_assoc($search_depts_stid)) {
+    $search_depts[] = $row;
+}
+
+// Fetch supervisors for search dropdown
+$search_supervisors_sql = "SELECT USER_ID, FIRST_NAME || ' ' || LAST_NAME AS FULL_NAME FROM USERS WHERE ROLE_ID = 3 ORDER BY FIRST_NAME, LAST_NAME";
+$search_supervisors_stid = oci_parse($conn, $search_supervisors_sql);
+oci_execute($search_supervisors_stid);
+$search_supervisors = [];
+while ($row = oci_fetch_assoc($search_supervisors_stid)) {
+    $search_supervisors[] = $row;
+}
+
+// Fetch all available years dynamically from PAPERS and THESES for filter
+$years_sql = "
+    SELECT DISTINCT PUBLICATION_YEAR AS YEAR FROM PAPERS
+    UNION
+    SELECT DISTINCT EXTRACT(YEAR FROM SUBMISSION_DATE) AS YEAR FROM THESES
+    ORDER BY YEAR DESC
+";
+$years_stid = oci_parse($conn, $years_sql);
+oci_execute($years_stid);
+$available_years = [];
+while ($row = oci_fetch_assoc($years_stid)) {
+    if ($row['YEAR']) {
+        $available_years[] = (int)$row['YEAR'];
+    }
+}
+
+// Initialize search parameters
+$search_keyword = trim($_GET['keyword'] ?? '');
+$search_dept    = isset($_GET['dept_id']) ? (int)$_GET['dept_id'] : 0;
+$search_super   = isset($_GET['supervisor_id']) ? (int)$_GET['supervisor_id'] : 0;
+$search_year    = isset($_GET['year']) ? (int)$_GET['year'] : 0;
+$search_status  = trim($_GET['status'] ?? '');
+$search_type    = trim($_GET['type'] ?? 'all');
+$search_sort    = trim($_GET['sort'] ?? 'date_desc');
+
+// Build dynamic search query
+$search_query = "
+SELECT ID, TITLE, TYPE, RESEARCHER_NAME, DEPARTMENT_NAME, SUB_DATE, STATUS, VERSION_NO, SCORE, SUPERVISOR_NAME, SUBMISSION_DATE
+FROM (
+    -- Papers branch
+    SELECT P.PAPER_ID AS ID, P.TITLE, 'Paper' AS TYPE,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS RESEARCHER_NAME,
+           D.DEPARTMENT_NAME,
+           TO_CHAR(P.SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE,
+           P.STATUS,
+           1 AS VERSION_NO,
+           (SELECT ROUND(AVG(R.SCORE), 1) FROM REVIEWS R JOIN REVIEW_ASSIGNMENTS RA ON R.ASSIGNMENT_ID = RA.ASSIGNMENT_ID WHERE RA.PAPER_ID = P.PAPER_ID) AS SCORE,
+           'N/A' AS SUPERVISOR_NAME,
+           P.SUBMISSION_DATE,
+           P.PUBLICATION_YEAR,
+           U.DEPARTMENT_ID,
+           0 AS SUPERVISOR_ID,
+           U.FIRST_NAME || ' ' || U.LAST_NAME || ' ' || P.TITLE AS SEARCH_TEXT
+    FROM PAPERS P
+    JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID
+    JOIN DEPARTMENTS D ON U.DEPARTMENT_ID = D.DEPARTMENT_ID
+    
+    UNION ALL
+    
+    -- Theses branch
+    SELECT T.THESIS_ID AS ID, T.TITLE, 'Thesis' AS TYPE,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS RESEARCHER_NAME,
+           D.DEPARTMENT_NAME,
+           TO_CHAR(T.SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE,
+           T.STATUS,
+           T.VERSION_NO,
+           NULL AS SCORE,
+           COALESCE(SV.FIRST_NAME || ' ' || SV.LAST_NAME, 'Not Assigned') AS SUPERVISOR_NAME,
+           T.SUBMISSION_DATE,
+           EXTRACT(YEAR FROM T.SUBMISSION_DATE) AS PUBLICATION_YEAR,
+           T.DEPARTMENT_ID,
+           COALESCE(TS.SUPERVISOR_ID, 0) AS SUPERVISOR_ID,
+           U.FIRST_NAME || ' ' || U.LAST_NAME || ' ' || T.TITLE || ' ' || COALESCE(SV.FIRST_NAME || ' ' || SV.LAST_NAME, '') AS SEARCH_TEXT
+    FROM THESES T
+    JOIN USERS U ON T.RESEARCHER_ID = U.USER_ID
+    JOIN DEPARTMENTS D ON T.DEPARTMENT_ID = D.DEPARTMENT_ID
+    LEFT JOIN THESIS_SUPERVISIONS TS ON T.THESIS_ID = TS.THESIS_ID AND TS.SUPERVISOR_TYPE = 'PRIMARY'
+    LEFT JOIN USERS SV ON TS.SUPERVISOR_ID = SV.USER_ID
+)
+WHERE 1 = 1
+";
+
+if (!empty($search_keyword)) {
+    $search_query .= " AND UPPER(SEARCH_TEXT) LIKE UPPER(:keyword)";
+}
+if ($search_dept > 0) {
+    $search_query .= " AND DEPARTMENT_ID = :dept_id";
+}
+if ($search_super > 0) {
+    $search_query .= " AND SUPERVISOR_ID = :supervisor_id";
+}
+if ($search_year > 0) {
+    $search_query .= " AND PUBLICATION_YEAR = :year";
+}
+if (!empty($search_status)) {
+    $search_query .= " AND STATUS = :status";
+}
+if ($search_type === 'paper') {
+    $search_query .= " AND TYPE = 'Paper'";
+} elseif ($search_type === 'thesis') {
+    $search_query .= " AND TYPE = 'Thesis'";
+}
+
+// Apply sorting
+if ($search_sort === 'date_asc') {
+    $search_query .= " ORDER BY SUBMISSION_DATE ASC";
+} elseif ($search_sort === 'score_desc') {
+    $search_query .= " ORDER BY NVL(SCORE, 0) DESC, SUBMISSION_DATE DESC";
+} else {
+    $search_query .= " ORDER BY SUBMISSION_DATE DESC";
+}
+
+$search_stid = oci_parse($conn, $search_query);
+
+// Bind variables dynamically
+if (!empty($search_keyword)) {
+    $keyword_bind = '%' . $search_keyword . '%';
+    oci_bind_by_name($search_stid, ':keyword', $keyword_bind);
+}
+if ($search_dept > 0) {
+    oci_bind_by_name($search_stid, ':dept_id', $search_dept);
+}
+if ($search_super > 0) {
+    oci_bind_by_name($search_stid, ':supervisor_id', $search_super);
+}
+if ($search_year > 0) {
+    oci_bind_by_name($search_stid, ':year', $search_year);
+}
+if (!empty($search_status)) {
+    oci_bind_by_name($search_stid, ':status', $search_status);
+}
+
+oci_execute($search_stid);
+
+$search_results = [];
+while ($row = oci_fetch_assoc($search_stid)) {
+    $search_results[] = $row;
 }
 
 // Handle Assign Reviewer POST
@@ -378,8 +542,8 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-roles">
+                <a href="#" onclick="showSection('roles'); return false;">
                     <i class="fas fa-user-tag"></i>
                     Roles
                 </a>
@@ -413,6 +577,13 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                 </a>
             </li>
 
+            <li id="nav-search">
+                <a href="#" onclick="showSection('search'); return false;">
+                    <i class="fas fa-search"></i>
+                    Search Submissions
+                </a>
+            </li>
+
             <li id="nav-analytics">
                 <a href="#" onclick="showSection('analytics'); return false;">
                     <i class="fas fa-chart-bar"></i>
@@ -427,12 +598,7 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
-                    <i class="fas fa-cog"></i>
-                    Settings
-                </a>
-            </li>
+
 
             <li>
                 <a href="../auth/logout.php">
@@ -523,12 +689,7 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                     <h4>Add Department</h4>
                 </div>
 
-                <div class="action-box">
-                    <i class="fas fa-chart-line"></i>
-                    <h4>Generate Report</h4>
-                </div>
-
-                <div class="action-box">
+                <div class="action-box" onclick="showSection('logs')" style="cursor: pointer;">
                     <i class="fas fa-history"></i>
                     <h4>View Logs</h4>
                 </div>
@@ -592,6 +753,38 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                     <?php endwhile; ?>
                 </tbody>
 
+            </table>
+
+        </section>
+
+        <!-- ─── Roles List Section ──────────────────────────── -->
+        <section class="table-section page-view" id="view-roles" style="display:none;">
+
+            <div class="table-header">
+                <h3>Roles</h3>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Role ID</th>
+                        <th>Role Name</th>
+                        <th>Total Users Assigned</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($roles_list as $role): ?>
+                        <tr>
+                            <td><?php echo (int)$role['ROLE_ID']; ?></td>
+                            <td style="font-weight:600; color:#0f172a;"><?php echo htmlspecialchars($role['ROLE_NAME']); ?></td>
+                            <td>
+                                <span class="status-badge" style="background:#e0f2fe; color:#0369a1; padding: 6px 12px; font-weight:600; font-size:13px; border-radius:12px; display: inline-block;">
+                                    <?php echo (int)$role['MEMBER_COUNT']; ?> Users
+                                </span>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
             </table>
 
         </section>
@@ -823,7 +1016,7 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                             on <span style="font-weight:600; color:#475569;"><?php echo htmlspecialchars($log['TABLE_NAME']); ?></span>: 
                             <span style="color: #334155;"><?php echo htmlspecialchars($log['DESCRIPTION']); ?></span>
                         </div>
-                        <span style="font-size:13px; color:#64748b;"><?php echo htmlspecialchars($log['ACTION_TIME']); ?></span>
+                        <span class="local-date" data-utc="<?php echo htmlspecialchars($log['ACTION_TIME_UTC']); ?>" style="font-size:13px; color:#64748b;"><?php echo htmlspecialchars($log['ACTION_TIME']); ?></span>
                     </div>
                 <?php endforeach; ?>
             <?php endif; ?>
@@ -1139,6 +1332,164 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
 
         </section>
 
+        <!-- ─── Search Section ────────────────────────────── -->
+        <section class="table-section page-view" id="view-search" style="display:none; padding: 20px;">
+
+            <div class="table-header" style="margin-bottom: 20px;">
+                <h3>Search Publications</h3>
+            </div>
+
+            <!-- Search Form Card -->
+            <div style="background: white; border-radius: 12px; padding: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; margin-bottom: 25px;">
+                <form method="GET" action="admin_dashboard.php" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; align-items: flex-end;">
+                    <input type="hidden" name="search" value="1">
+
+                    <!-- Title / Author Keyword -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_keyword" style="font-weight: 600; color: #475569; font-size: 13px;">Title / Author Keyword</label>
+                        <input type="text" id="search_keyword" name="keyword" value="<?php echo htmlspecialchars($search_keyword); ?>" placeholder="e.g. Machine Learning, John" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                    </div>
+
+                    <!-- Department -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_dept" style="font-weight: 600; color: #475569; font-size: 13px;">Department</label>
+                        <select id="search_dept" name="dept_id" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="">All Departments</option>
+                            <?php foreach ($search_depts as $d): ?>
+                                <option value="<?php echo (int)$d['DEPARTMENT_ID']; ?>" <?php echo ($search_dept == $d['DEPARTMENT_ID']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($d['DEPARTMENT_NAME']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- Supervisor -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_super" style="font-weight: 600; color: #475569; font-size: 13px;">Supervisor (Theses)</label>
+                        <select id="search_super" name="supervisor_id" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="">All Supervisors</option>
+                            <?php foreach ($search_supervisors as $s): ?>
+                                <option value="<?php echo (int)$s['USER_ID']; ?>" <?php echo ($search_super == $s['USER_ID']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($s['FULL_NAME']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- Publication Year -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_year" style="font-weight: 600; color: #475569; font-size: 13px;">Publication Year</label>
+                        <select id="search_year" name="year" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="">All Years</option>
+                            <?php foreach ($available_years as $y): ?>
+                                <option value="<?php echo $y; ?>" <?php echo ($search_year == $y) ? 'selected' : ''; ?>>
+                                    <?php echo $y; ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- Status -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_status" style="font-weight: 600; color: #475569; font-size: 13px;">Status</label>
+                        <select id="search_status" name="status" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="">All Statuses</option>
+                            <option value="SUBMITTED" <?php echo ($search_status === 'SUBMITTED') ? 'selected' : ''; ?>>SUBMITTED</option>
+                            <option value="UNDER REVIEW" <?php echo ($search_status === 'UNDER REVIEW') ? 'selected' : ''; ?>>UNDER REVIEW</option>
+                            <option value="ACCEPTED" <?php echo ($search_status === 'ACCEPTED') ? 'selected' : ''; ?>>ACCEPTED</option>
+                            <option value="APPROVED" <?php echo ($search_status === 'APPROVED') ? 'selected' : ''; ?>>APPROVED</option>
+                            <option value="REJECTED" <?php echo ($search_status === 'REJECTED') ? 'selected' : ''; ?>>REJECTED</option>
+                        </select>
+                    </div>
+
+                    <!-- Type -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_type" style="font-weight: 600; color: #475569; font-size: 13px;">Type</label>
+                        <select id="search_type" name="type" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="all" <?php echo ($search_type === 'all') ? 'selected' : ''; ?>>All Submissions</option>
+                            <option value="paper" <?php echo ($search_type === 'paper') ? 'selected' : ''; ?>>Papers Only</option>
+                            <option value="thesis" <?php echo ($search_type === 'thesis') ? 'selected' : ''; ?>>Theses Only</option>
+                        </select>
+                    </div>
+
+                    <!-- Sort -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label for="search_sort" style="font-weight: 600; color: #475569; font-size: 13px;">Sort By</label>
+                        <select id="search_sort" name="sort" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s;">
+                            <option value="date_desc" <?php echo ($search_sort === 'date_desc') ? 'selected' : ''; ?>>Date (Newest)</option>
+                            <option value="date_asc" <?php echo ($search_sort === 'date_asc') ? 'selected' : ''; ?>>Date (Oldest)</option>
+                            <option value="score_desc" <?php echo ($search_sort === 'score_desc') ? 'selected' : ''; ?>>Avg Score (Highest)</option>
+                        </select>
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div style="display: flex; gap: 10px; margin-bottom: 2px;">
+                        <button type="submit" class="add-btn" style="flex: 1; padding: 11px 16px; border-radius: 8px; border: none; font-weight: 600; color: white; background: #2563eb; cursor: pointer; transition: background 0.2s;">Search</button>
+                        <a href="admin_dashboard.php?search=1" style="display: inline-block; padding: 11px 16px; text-decoration: none; border-radius: 8px; border: 1px solid #cbd5e1; font-weight: 600; color: #475569; background: #f8fafc; text-align: center; font-size: 13px; transition: background 0.2s;">Clear</a>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Results Table -->
+            <table>
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Title</th>
+                        <th>Researcher</th>
+                        <th>Department</th>
+                        <th>Supervisor</th>
+                        <th>Avg Score</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($search_results)): ?>
+                        <tr>
+                            <td colspan="7" style="text-align: center; color: #94a3b8; font-style: italic; padding: 25px;">No records match the search criteria.</td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($search_results as $res): ?>
+                            <tr>
+                                <td>
+                                    <?php 
+                                        $type_class = ($res['TYPE'] === 'Paper') ? 'background:#ecfdf5; color:#047857;' : 'background:#e0f2fe; color:#0369a1;';
+                                    ?>
+                                    <span style="font-weight: 600; font-size: 12px; padding: 4px 8px; border-radius: 6px; <?php echo $type_class; ?>">
+                                        <?php echo htmlspecialchars($res['TYPE']); ?>
+                                    </span>
+                                </td>
+                                <td style="font-weight: 600; color: #0f172a; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($res['TITLE']); ?>">
+                                    <?php echo htmlspecialchars($res['TITLE']); ?>
+                                </td>
+                                <td><?php echo htmlspecialchars($res['RESEARCHER_NAME']); ?></td>
+                                <td><?php echo htmlspecialchars($res['DEPARTMENT_NAME']); ?></td>
+                                <td><?php echo htmlspecialchars($res['SUPERVISOR_NAME']); ?></td>
+                                <td style="font-weight: 600; color: #2563eb;">
+                                    <?php echo ($res['SCORE'] !== null) ? htmlspecialchars($res['SCORE']) . '/10' : '-'; ?>
+                                </td>
+                                <td>
+                                    <?php 
+                                        $stat = $res['STATUS'];
+                                        $stat_class = 'status-review';
+                                        if ($stat === 'APPROVED' || $stat === 'ACCEPTED' || $stat === 'PUBLISHED') {
+                                            $stat_class = 'status-approved';
+                                        } elseif ($stat === 'REJECTED') {
+                                            $stat_class = 'status-rejected';
+                                        }
+                                    ?>
+                                    <span class="status-badge <?php echo $stat_class; ?>">
+                                        <?php echo htmlspecialchars($stat); ?>
+                                    </span>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+
+        </section>
+
     </main>
 
 </div>
@@ -1426,6 +1777,41 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
 </div>
 
 <script>
+document.addEventListener("DOMContentLoaded", function() {
+    document.querySelectorAll('.local-date').forEach(function(el) {
+        var utcStr = el.getAttribute('data-utc');
+        if (utcStr) {
+            var parts = utcStr.split(' ');
+            var dateParts = parts[0].split('-');
+            var timeParts = parts[1].split(':');
+            var utcDate = new Date(Date.UTC(
+                parseInt(dateParts[0]),
+                parseInt(dateParts[1]) - 1,
+                parseInt(dateParts[2]),
+                parseInt(timeParts[0]),
+                parseInt(timeParts[1]),
+                parseInt(timeParts[2])
+            ));
+            
+            var day = utcDate.getDate();
+            var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            var month = months[utcDate.getMonth()];
+            var year = utcDate.getFullYear();
+            var hours = String(utcDate.getHours()).padStart(2, '0');
+            var minutes = String(utcDate.getMinutes()).padStart(2, '0');
+            var seconds = String(utcDate.getSeconds()).padStart(2, '0');
+            
+            el.textContent = day + ' ' + month + ' ' + year + ' ' + hours + ':' + minutes + ':' + seconds;
+        }
+    });
+});
+
+<?php if (isset($_GET['search'])): ?>
+document.addEventListener("DOMContentLoaded", function() {
+    showSection('search');
+});
+<?php endif; ?>
+
 /* ─── Global: Navigation Section Switcher ─── */
 function showSection(section) {
     // Remove active class from all sidebar items
@@ -1443,13 +1829,15 @@ function showSection(section) {
         'view-dashboard',
         'view-dashboard-actions',
         'view-users',
+        'view-roles',
         'view-analytics-summary',
         'view-analytics-detail',
         'view-logs',
         'view-departments',
         'view-theses',
         'view-papers',
-        'view-reviews'
+        'view-reviews',
+        'view-search'
     ];
 
     // Hide all views first
@@ -1467,6 +1855,8 @@ function showSection(section) {
         if (document.getElementById('view-logs')) document.getElementById('view-logs').style.display = 'block';
     } else if (section === 'users') {
         if (document.getElementById('view-users')) document.getElementById('view-users').style.display = 'block';
+    } else if (section === 'roles') {
+        if (document.getElementById('view-roles')) document.getElementById('view-roles').style.display = 'block';
     } else if (section === 'departments') {
         if (document.getElementById('view-departments')) document.getElementById('view-departments').style.display = 'block';
     } else if (section === 'theses') {
@@ -1479,6 +1869,8 @@ function showSection(section) {
         if (document.getElementById('view-analytics-detail')) document.getElementById('view-analytics-detail').style.display = 'block';
     } else if (section === 'logs') {
         if (document.getElementById('view-logs')) document.getElementById('view-logs').style.display = 'block';
+    } else if (section === 'search') {
+        if (document.getElementById('view-search')) document.getElementById('view-search').style.display = 'block';
     }
 }
 
