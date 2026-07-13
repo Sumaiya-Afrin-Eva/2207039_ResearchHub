@@ -21,6 +21,14 @@ oci_execute($stats_res_stid);
 $stats_res_row = oci_fetch_assoc($stats_res_stid);
 $cnt_researchers = $stats_res_row ? (int)$stats_res_row['CNT'] : 0;
 
+// Query for total researchers in system
+$total_res_sql = "SELECT COUNT(*) AS CNT FROM USERS WHERE ROLE_ID = 2";
+$total_res_stid = oci_parse($conn, $total_res_sql);
+oci_execute($total_res_stid);
+$total_res_row = oci_fetch_assoc($total_res_stid);
+$total_researchers = $total_res_row ? (int)$total_res_row['CNT'] : 0;
+$workload_percent = ($total_researchers > 0) ? round(($cnt_researchers / $total_researchers) * 100) : 0;
+
 // 2. Active Theses count
 $stats_thesis_sql = "
     SELECT COUNT(*) AS CNT
@@ -99,12 +107,33 @@ $pending_theses_sql = "SELECT T.THESIS_ID, T.TITLE,
     JOIN THESES T ON TS.THESIS_ID = T.THESIS_ID
     JOIN USERS U ON T.RESEARCHER_ID = U.USER_ID
     WHERE TS.SUPERVISOR_ID = :supervisor_id
-      AND T.STATUS = 'SUBMITTED'
+      AND T.STATUS NOT IN ('APPROVED', 'REJECTED')
     ORDER BY T.THESIS_ID DESC
 ";
 $pending_theses_stid = oci_parse($conn, $pending_theses_sql);
 oci_bind_by_name($pending_theses_stid, ':supervisor_id', $supervisor_id);
 oci_execute($pending_theses_stid);
+
+// Fetch approved theses list
+$approved_theses_sql = "
+    SELECT T.THESIS_ID, T.TITLE, T.VERSION_NO,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS RESEARCHER_NAME,
+           TO_CHAR(T.SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE
+    FROM THESIS_SUPERVISIONS TS
+    JOIN THESES T ON TS.THESIS_ID = T.THESIS_ID
+    JOIN USERS U ON T.RESEARCHER_ID = U.USER_ID
+    WHERE TS.SUPERVISOR_ID = :supervisor_id
+      AND T.STATUS = 'APPROVED'
+    ORDER BY T.THESIS_ID DESC
+";
+$approved_theses_stid = oci_parse($conn, $approved_theses_sql);
+oci_bind_by_name($approved_theses_stid, ':supervisor_id', $supervisor_id);
+oci_execute($approved_theses_stid);
+
+$approved_theses_list = [];
+while ($row = oci_fetch_assoc($approved_theses_stid)) {
+    $approved_theses_list[] = $row;
+}
 
 // 7. Fetch theses for review list
 $theses_review_sql = "SELECT T.THESIS_ID, T.TITLE, T.STATUS, T.VERSION_NO, CONCAT(CONCAT(U.FIRST_NAME, ' '), U.LAST_NAME) AS RESEARCHER_NAME, D.DEPARTMENT_NAME FROM THESIS_SUPERVISIONS TS 
@@ -235,8 +264,8 @@ while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-approvals">
+                <a href="#" onclick="showSection('approvals'); return false;">
                     <i class="fas fa-check-circle"></i>
                     Approvals
                 </a>
@@ -246,20 +275,6 @@ while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
                 <a href="#" onclick="showSection('feedback'); return false;">
                     <i class="fas fa-comments"></i>
                     Feedback
-                </a>
-            </li>
-
-            <li>
-                <a href="#">
-                    <i class="fas fa-chart-line"></i>
-                    Reports
-                </a>
-            </li>
-
-            <li>
-                <a href="#">
-                    <i class="fas fa-user"></i>
-                    Profile
                 </a>
             </li>
 
@@ -320,43 +335,6 @@ while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
                 <p>Approved Works</p>
             </div>
 
-            <div class="card">
-                <i class="fas fa-clock"></i>
-                <h3><?php echo $cnt_pending; ?></h3>
-                <p>Pending Reviews</p>
-            </div>
-
-        </section>
-
-        <!-- Quick Actions -->
-
-        <section class="quick-actions" id="view-actions">
-
-            <h3>Quick Actions</h3>
-
-            <div class="action-grid">
-
-                <div class="action-box">
-                    <i class="fas fa-book"></i>
-                    <h4>Review Thesis</h4>
-                </div>
-
-                <div class="action-box">
-                    <i class="fas fa-file-alt"></i>
-                    <h4>Review Paper</h4>
-                </div>
-
-                <div class="action-box">
-                    <i class="fas fa-comment-dots"></i>
-                    <h4>Add Feedback</h4>
-                </div>
-
-                <div class="action-box">
-                    <i class="fas fa-chart-bar"></i>
-                    <h4>Generate Report</h4>
-                </div>
-
-            </div>
 
         </section>
 
@@ -517,10 +495,47 @@ while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
             <?php endwhile; ?>
 
             <?php if (!$has_pending): ?>
-                <div style="background:white; padding:25px; border-radius:12px; border: 1px dashed #cbd5e1; text-align:center; color:#64748b;">
+                <div style="background:white; padding:25px; border-radius:12px; border: 1px dashed #cbd5e1; text-align:center; color:#64748b; margin-bottom: 30px;">
                     No pending thesis requests.
                 </div>
             <?php endif; ?>
+
+            <h3 style="margin-top: 30px; margin-bottom: 20px;">Your Approved Theses</h3>
+
+            <div style="background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                    <thead>
+                        <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                            <th style="padding: 14px 20px; font-weight: 600; color: #475569; font-size: 14px;">Thesis Title</th>
+                            <th style="padding: 14px 20px; font-weight: 600; color: #475569; font-size: 14px;">Researcher</th>
+                            <th style="padding: 14px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Version</th>
+                            <th style="padding: 14px 20px; font-weight: 600; color: #475569; font-size: 14px;">Submission Date</th>
+                            <th style="padding: 14px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($approved_theses_list)): ?>
+                            <tr>
+                                <td colspan="5" style="padding: 20px; text-align: center; color: #94a3b8; font-style: italic;">No approved theses found.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($approved_theses_list as $thesis): ?>
+                                <tr style="border-bottom: 1px solid #f1f5f9;">
+                                    <td style="padding: 14px 20px; color: #0f172a; font-weight: 600; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($thesis['TITLE']); ?>"><?php echo htmlspecialchars($thesis['TITLE']); ?></td>
+                                    <td style="padding: 14px 20px; color: #475569;"><?php echo htmlspecialchars($thesis['RESEARCHER_NAME']); ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; color: #64748b; font-weight: 500;">v<?php echo htmlspecialchars($thesis['VERSION_NO']); ?></td>
+                                    <td style="padding: 14px 20px; color: #64748b;"><?php echo htmlspecialchars($thesis['SUB_DATE']); ?></td>
+                                    <td style="padding: 14px 20px; text-align: center;">
+                                        <span class="status-badge status-approved" style="background: #ecfdf5; color: #047857; padding: 4px 10px; font-weight: 600; font-size: 12px; border-radius: 12px;">
+                                            APPROVED
+                                        </span>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
 
         </section>
 
@@ -535,8 +550,8 @@ while ($row = oci_fetch_assoc($monitored_reviews_stid)) {
                 <p>Research Supervision Capacity</p>
 
                 <div class="progress-bar">
-                    <div class="progress-fill">
-                        80%
+                    <div class="progress-fill" style="width: <?php echo $workload_percent; ?>%;">
+                        <?php echo $workload_percent; ?>% (<?php echo $cnt_researchers; ?>/<?php echo $total_researchers; ?> Assigned)
                     </div>
                 </div>
 
@@ -660,7 +675,6 @@ function showSection(section) {
     });
 
     var viewStats = document.getElementById('view-stats');
-    var viewActions = document.getElementById('view-actions');
     var viewTable = document.getElementById('view-researchers-table');
     var viewApprovals = document.getElementById('view-approvals');
     var viewWorkload = document.getElementById('view-workload');
@@ -670,7 +684,6 @@ function showSection(section) {
 
     // Hide all views first
     if (viewStats) viewStats.style.display = 'none';
-    if (viewActions) viewActions.style.display = 'none';
     if (viewTable) viewTable.style.display = 'none';
     if (viewApprovals) viewApprovals.style.display = 'none';
     if (viewWorkload) viewWorkload.style.display = 'none';
@@ -683,7 +696,6 @@ function showSection(section) {
         if (navDash) navDash.classList.add('active');
 
         if (viewStats) viewStats.style.display = 'grid';
-        if (viewActions) viewActions.style.display = 'block';
         if (viewTable) viewTable.style.display = 'block';
         if (viewApprovals) viewApprovals.style.display = 'block';
         if (viewWorkload) viewWorkload.style.display = 'block';
@@ -707,6 +719,10 @@ function showSection(section) {
         var navFeed = document.getElementById('nav-feedback');
         if (navFeed) navFeed.classList.add('active');
         if (viewFeedback) viewFeedback.style.display = 'block';
+    } else if (section === 'approvals') {
+        var navApp = document.getElementById('nav-approvals');
+        if (navApp) navApp.classList.add('active');
+        if (viewApprovals) viewApprovals.style.display = 'block';
     }
 }
 </script>
