@@ -364,19 +364,7 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
-                    <i class="fas fa-chart-line"></i>
-                    Analytics
-                </a>
-            </li>
 
-            <li>
-                <a href="#">
-                    <i class="fas fa-user"></i>
-                    Profile
-                </a>
-            </li>
 
             <li>
                 <a href="../auth/logout.php">
@@ -483,10 +471,7 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
                     <h4>Search Publications</h4>
                 </div>
 
-                <div class="action-box">
-                    <i class="fas fa-chart-pie"></i>
-                    <h4>View Reports</h4>
-                </div>
+
 
             </div>
 
@@ -547,25 +532,7 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
 
         </section>
 
-        <!-- Progress -->
 
-        <section class="progress-section">
-
-            <h3>Research Progress</h3>
-
-            <div class="progress-card">
-
-                <p>Current Thesis: <strong><?php echo htmlspecialchars($thesis_title); ?></strong></p>
-
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: <?php echo $progress_pct; ?>%;">
-                        <?php echo $progress_pct; ?>%
-                    </div>
-                </div>
-
-            </div>
-
-        </section>
         </div> <!-- End of home-section -->
 
         <!-- Reviews & Feedback Section -->
