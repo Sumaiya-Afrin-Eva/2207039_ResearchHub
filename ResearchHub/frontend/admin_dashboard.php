@@ -148,6 +148,131 @@ while ($row = oci_fetch_assoc($reviews_table_stid)) {
     $reviews_list[] = $row;
 }
 
+// --- Proposal Analytics Queries ---
+
+// Summary card queries
+$papers_this_year_sql = "SELECT COUNT(*) AS TOTAL FROM PAPERS WHERE PUBLICATION_YEAR = EXTRACT(YEAR FROM SYSDATE)";
+$stid_pt = oci_parse($conn, $papers_this_year_sql);
+oci_execute($stid_pt);
+$row_pt = oci_fetch_assoc($stid_pt);
+$papers_this_year = $row_pt['TOTAL'] ?? 0;
+
+$reviews_completed_sql = "SELECT COUNT(*) AS TOTAL FROM REVIEWS";
+$stid_rc = oci_parse($conn, $reviews_completed_sql);
+oci_execute($stid_rc);
+$row_rc = oci_fetch_assoc($stid_rc);
+$reviews_completed = $row_rc['TOTAL'] ?? 0;
+
+$top_dept_sql = "
+    SELECT D.DEPARTMENT_NAME
+    FROM DEPARTMENTS D
+    ORDER BY (
+        (SELECT COUNT(*) FROM PAPERS P JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID WHERE U.DEPARTMENT_ID = D.DEPARTMENT_ID) +
+        (SELECT COUNT(*) FROM THESES T WHERE T.DEPARTMENT_ID = D.DEPARTMENT_ID)
+    ) DESC
+    FETCH FIRST 1 ROW ONLY
+";
+$stid_td = oci_parse($conn, $top_dept_sql);
+oci_execute($stid_td);
+$row_td = oci_fetch_assoc($stid_td);
+$top_dept_name = $row_td['DEPARTMENT_NAME'] ?? 'None';
+
+// 1. Publications by Department
+$pub_dept_sql = "
+    SELECT D.DEPARTMENT_NAME,
+           (SELECT COUNT(*) FROM PAPERS P JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID WHERE U.DEPARTMENT_ID = D.DEPARTMENT_ID) AS PAPER_COUNT,
+           (SELECT COUNT(*) FROM THESES T WHERE T.DEPARTMENT_ID = D.DEPARTMENT_ID) AS THESIS_COUNT,
+           ((SELECT COUNT(*) FROM PAPERS P JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID WHERE U.DEPARTMENT_ID = D.DEPARTMENT_ID) +
+            (SELECT COUNT(*) FROM THESES T WHERE T.DEPARTMENT_ID = D.DEPARTMENT_ID)) AS TOTAL_PUBLICATIONS
+    FROM DEPARTMENTS D
+    ORDER BY TOTAL_PUBLICATIONS DESC
+";
+$pub_dept_stid = oci_parse($conn, $pub_dept_sql);
+oci_execute($pub_dept_stid);
+$pub_dept_list = [];
+while ($row = oci_fetch_assoc($pub_dept_stid)) {
+    $pub_dept_list[] = $row;
+}
+
+// 2. Publications by Year
+$pub_year_sql = "
+    SELECT COALESCE(P.YEAR, T.YEAR) AS PUB_YEAR,
+           COALESCE(P.PAPER_COUNT, 0) AS PAPER_COUNT,
+           COALESCE(T.THESIS_COUNT, 0) AS THESIS_COUNT,
+           (COALESCE(P.PAPER_COUNT, 0) + COALESCE(T.THESIS_COUNT, 0)) AS TOTAL_COUNT
+    FROM (
+        SELECT PUBLICATION_YEAR AS YEAR, COUNT(*) AS PAPER_COUNT
+        FROM PAPERS
+        GROUP BY PUBLICATION_YEAR
+    ) P
+    FULL OUTER JOIN (
+        SELECT EXTRACT(YEAR FROM SUBMISSION_DATE) AS YEAR, COUNT(*) AS THESIS_COUNT
+        FROM THESES
+        GROUP BY EXTRACT(YEAR FROM SUBMISSION_DATE)
+    ) T ON P.YEAR = T.YEAR
+    ORDER BY PUB_YEAR DESC
+";
+$pub_year_stid = oci_parse($conn, $pub_year_sql);
+oci_execute($pub_year_stid);
+$pub_year_list = [];
+while ($row = oci_fetch_assoc($pub_year_stid)) {
+    $pub_year_list[] = $row;
+}
+
+// 3. Supervisor Workload
+$super_workload_sql = "
+    SELECT U.FIRST_NAME || ' ' || U.LAST_NAME AS SUPERVISOR_NAME,
+           D.DEPARTMENT_NAME,
+           COUNT(TS.THESIS_ID) AS ACTIVE_THESES
+    FROM USERS U
+    JOIN DEPARTMENTS D ON U.DEPARTMENT_ID = D.DEPARTMENT_ID
+    LEFT JOIN THESIS_SUPERVISIONS TS ON U.USER_ID = TS.SUPERVISOR_ID AND TS.SUPERVISOR_TYPE = 'PRIMARY'
+    WHERE U.ROLE_ID = 3
+    GROUP BY U.USER_ID, U.FIRST_NAME, U.LAST_NAME, D.DEPARTMENT_NAME
+    ORDER BY ACTIVE_THESES DESC, SUPERVISOR_NAME ASC
+";
+$super_workload_stid = oci_parse($conn, $super_workload_sql);
+oci_execute($super_workload_stid);
+$super_workload_list = [];
+while ($row = oci_fetch_assoc($super_workload_stid)) {
+    $super_workload_list[] = $row;
+}
+
+// 4. Review Statistics
+$review_stats_sql = "
+    SELECT COUNT(*) AS TOTAL_REVIEWS,
+           ROUND(AVG(SCORE), 2) AS AVG_SCORE,
+           MAX(SCORE) AS MAX_SCORE,
+           MIN(SCORE) AS MIN_SCORE,
+           SUM(CASE WHEN RECOMMENDATION IN ('ACCEPT', 'MINOR REVISION') THEN 1 ELSE 0 END) AS ACCEPT_COUNT,
+           SUM(CASE WHEN RECOMMENDATION = 'REJECT' THEN 1 ELSE 0 END) AS REJECT_COUNT,
+           SUM(CASE WHEN RECOMMENDATION = 'MAJOR REVISION' THEN 1 ELSE 0 END) AS REVISION_COUNT
+    FROM REVIEWS
+";
+$review_stats_stid = oci_parse($conn, $review_stats_sql);
+oci_execute($review_stats_stid);
+$review_stats_row = oci_fetch_assoc($review_stats_stid);
+
+// 5. Top Researchers
+$top_researchers_sql = "
+    SELECT U.FIRST_NAME || ' ' || U.LAST_NAME AS RESEARCHER_NAME,
+           D.DEPARTMENT_NAME,
+           (SELECT COUNT(*) FROM PAPERS P WHERE P.RESEARCHER_ID = U.USER_ID AND P.STATUS = 'ACCEPTED') AS APPROVED_PAPERS,
+           (SELECT COUNT(*) FROM THESES T WHERE T.RESEARCHER_ID = U.USER_ID AND T.STATUS = 'APPROVED') AS APPROVED_THESES,
+           ((SELECT COUNT(*) FROM PAPERS P WHERE P.RESEARCHER_ID = U.USER_ID AND P.STATUS = 'ACCEPTED') +
+            (SELECT COUNT(*) FROM THESES T WHERE T.RESEARCHER_ID = U.USER_ID AND T.STATUS = 'APPROVED')) AS TOTAL_APPROVED
+    FROM USERS U
+    JOIN DEPARTMENTS D ON U.DEPARTMENT_ID = D.DEPARTMENT_ID
+    WHERE U.ROLE_ID = 2
+    ORDER BY TOTAL_APPROVED DESC, RESEARCHER_NAME ASC
+";
+$top_researchers_stid = oci_parse($conn, $top_researchers_sql);
+oci_execute($top_researchers_stid);
+$top_researchers_list = [];
+while ($row = oci_fetch_assoc($top_researchers_stid)) {
+    $top_researchers_list[] = $row;
+}
+
 // Handle Assign Reviewer POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'assign_reviewer') {
     $paper_id = isset($_POST['paper_id']) ? (int)$_POST['paper_id'] : 0;
@@ -267,8 +392,8 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-analytics">
+                <a href="#" onclick="showSection('analytics'); return false;">
                     <i class="fas fa-chart-bar"></i>
                     Analytics
                 </a>
@@ -450,24 +575,211 @@ while ($row = oci_fetch_assoc($reviewers_dropdown_stid)) {
 
         </section>
 
-        <section class="analytics page-view" id="view-analytics">
+        <section class="analytics page-view" id="view-analytics-summary">
 
             <div class="analytics-card">
                 <h3>Publication Statistics</h3>
                 <p>Research Papers Published This Year</p>
-                <h2>245</h2>
+                <h2><?php echo number_format($papers_this_year); ?></h2>
             </div>
 
             <div class="analytics-card">
                 <h3>Review Statistics</h3>
                 <p>Total Reviews Completed</p>
-                <h2>1,125</h2>
+                <h2><?php echo number_format($reviews_completed); ?></h2>
             </div>
 
             <div class="analytics-card">
                 <h3>Top Department</h3>
                 <p>Highest Publication Count</p>
-                <h2>CSE</h2>
+                <h2><?php echo htmlspecialchars($top_dept_name); ?></h2>
+            </div>
+
+        </section>
+
+        <!-- ─── Proposal Analytics Detail Section ────────────────── -->
+        <section class="page-view" id="view-analytics-detail" style="display:none;">
+
+            <!-- Row 1: Review Statistics Metrics Card & Recommendation Splits Card -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 25px;">
+                
+                <div class="analytics-card" style="margin: 0; background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; text-align: left;">
+                    <h4 style="color: #64748b; font-size: 14px; font-weight: 600; text-transform: uppercase; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-star-half-alt" style="color: #3b82f6;"></i> Review Scoring Metrics
+                    </h4>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #64748b; font-size: 14px;">Total Reviews Submitted</span>
+                        <span style="font-weight: 700; color: #0f172a; font-size: 14px;"><?php echo (int)($review_stats_row['TOTAL_REVIEWS'] ?? 0); ?></span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #64748b; font-size: 14px;">Average Score</span>
+                        <span style="font-weight: 700; color: #2563eb; font-size: 14px;"><?php echo $review_stats_row['AVG_SCORE'] !== null ? $review_stats_row['AVG_SCORE'] : '0'; ?>/10</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #64748b; font-size: 14px;">Highest Score Given</span>
+                        <span style="font-weight: 700; color: #16a34a; font-size: 14px;"><?php echo $review_stats_row['MAX_SCORE'] !== null ? (int)$review_stats_row['MAX_SCORE'] : '0'; ?>/10</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #64748b; font-size: 14px;">Lowest Score Given</span>
+                        <span style="font-weight: 700; color: #dc2626; font-size: 14px;"><?php echo $review_stats_row['MIN_SCORE'] !== null ? (int)$review_stats_row['MIN_SCORE'] : '0'; ?>/10</span>
+                    </div>
+                </div>
+
+                <div class="analytics-card" style="margin: 0; background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; text-align: left;">
+                    <h4 style="color: #64748b; font-size: 14px; font-weight: 600; text-transform: uppercase; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-chart-pie" style="color: #10b981;"></i> Recommendation Splits
+                    </h4>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #64748b; font-size: 14px;">Accepted (Accept/Minor)</span>
+                        <span style="font-weight: 700; color: #16a34a; font-size: 14px;"><?php echo (int)($review_stats_row['ACCEPT_COUNT'] ?? 0); ?></span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #64748b; font-size: 14px;">Rejected</span>
+                        <span style="font-weight: 700; color: #dc2626; font-size: 14px;"><?php echo (int)($review_stats_row['REJECT_COUNT'] ?? 0); ?></span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #64748b; font-size: 14px;">Major Revision Pending</span>
+                        <span style="font-weight: 700; color: #d97706; font-size: 14px;"><?php echo (int)($review_stats_row['REVISION_COUNT'] ?? 0); ?></span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Publications by Department -->
+            <div class="table-section" style="margin-bottom: 25px; background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden;">
+                <div class="table-header" style="padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px;">
+                    <i class="fas fa-building" style="color: #64748b;"></i>
+                    <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #0f172a;">Publications by Department</h3>
+                </div>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="background: #f8fafc; text-align: left; border-bottom: 1px solid #e2e8f0;">
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Department Name</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Papers</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Theses</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Total Publications</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($pub_dept_list)): ?>
+                            <tr>
+                                <td colspan="4" style="padding: 16px 20px; text-align: center; color: #94a3b8;">No publications data found.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($pub_dept_list as $row): ?>
+                                <tr style="border-bottom: 1px solid #f1f5f9;">
+                                    <td style="padding: 14px 20px; color: #0f172a; font-weight: 500;"><?php echo htmlspecialchars($row['DEPARTMENT_NAME']); ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; color: #475569;"><?php echo (int)$row['PAPER_COUNT']; ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; color: #475569;"><?php echo (int)$row['THESIS_COUNT']; ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; font-weight: 600; color: #2563eb;"><?php echo (int)$row['TOTAL_PUBLICATIONS']; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Publications by Year -->
+            <div class="table-section" style="margin-bottom: 25px; background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden;">
+                <div class="table-header" style="padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px;">
+                    <i class="fas fa-calendar-alt" style="color: #64748b;"></i>
+                    <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #0f172a;">Publications by Year</h3>
+                </div>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="background: #f8fafc; text-align: left; border-bottom: 1px solid #e2e8f0;">
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Year</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Papers Published</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Theses Submitted</th>
+                            <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Total Combined</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($pub_year_list)): ?>
+                            <tr>
+                                <td colspan="4" style="padding: 16px 20px; text-align: center; color: #94a3b8;">No yearly data found.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($pub_year_list as $row): ?>
+                                <tr style="border-bottom: 1px solid #f1f5f9;">
+                                    <td style="padding: 14px 20px; color: #0f172a; font-weight: 600;"><?php echo htmlspecialchars($row['PUB_YEAR']); ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; color: #475569;"><?php echo (int)$row['PAPER_COUNT']; ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; color: #475569;"><?php echo (int)$row['THESIS_COUNT']; ?></td>
+                                    <td style="padding: 14px 20px; text-align: center; font-weight: 600; color: #2563eb;"><?php echo (int)$row['TOTAL_COUNT']; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Two Column Row: Supervisor Workload & Top Researchers -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(45%, 1fr)); gap: 25px;">
+                
+                <!-- Supervisor Workload -->
+                <div class="table-section" style="background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden; height: fit-content;">
+                    <div class="table-header" style="padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px;">
+                        <i class="fas fa-user-tie" style="color: #64748b;"></i>
+                        <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #0f172a;">Supervisor Workload</h3>
+                    </div>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f8fafc; text-align: left; border-bottom: 1px solid #e2e8f0;">
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Supervisor</th>
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Department</th>
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Active Theses</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($super_workload_list)): ?>
+                                <tr>
+                                    <td colspan="3" style="padding: 16px 20px; text-align: center; color: #94a3b8;">No supervisor data found.</td>
+                                </tr>
+                            <?php else: ?>
+                                <?php foreach ($super_workload_list as $row): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 14px 20px; color: #0f172a; font-weight: 500;"><?php echo htmlspecialchars($row['SUPERVISOR_NAME']); ?></td>
+                                        <td style="padding: 14px 20px; color: #64748b;"><?php echo htmlspecialchars($row['DEPARTMENT_NAME']); ?></td>
+                                        <td style="padding: 14px 20px; text-align: center; font-weight: 600; color: #2563eb;"><?php echo (int)$row['ACTIVE_THESES']; ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Top Researchers -->
+                <div class="table-section" style="background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; overflow: hidden; height: fit-content;">
+                    <div class="table-header" style="padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px;">
+                        <i class="fas fa-medal" style="color: #64748b;"></i>
+                        <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #0f172a;">Top Researchers</h3>
+                    </div>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f8fafc; text-align: left; border-bottom: 1px solid #e2e8f0;">
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Researcher</th>
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px;">Department</th>
+                                <th style="padding: 12px 20px; font-weight: 600; color: #475569; font-size: 14px; text-align: center;">Approved Pubs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($top_researchers_list)): ?>
+                                <tr>
+                                    <td colspan="3" style="padding: 16px 20px; text-align: center; color: #94a3b8;">No researcher data found.</td>
+                                </tr>
+                            <?php else: ?>
+                                <?php foreach ($top_researchers_list as $row): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 14px 20px; color: #0f172a; font-weight: 500;"><?php echo htmlspecialchars($row['RESEARCHER_NAME']); ?></td>
+                                        <td style="padding: 14px 20px; color: #64748b;"><?php echo htmlspecialchars($row['DEPARTMENT_NAME']); ?></td>
+                                        <td style="padding: 14px 20px; text-align: center; font-weight: 600; color: #16a34a;"><?php echo (int)$row['TOTAL_APPROVED']; ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+
             </div>
 
         </section>
@@ -1111,7 +1423,8 @@ function showSection(section) {
         'view-dashboard',
         'view-dashboard-actions',
         'view-users',
-        'view-analytics',
+        'view-analytics-summary',
+        'view-analytics-detail',
         'view-logs',
         'view-departments',
         'view-theses',
@@ -1130,7 +1443,7 @@ function showSection(section) {
         if (document.getElementById('view-dashboard')) document.getElementById('view-dashboard').style.display = 'grid';
         if (document.getElementById('view-dashboard-actions')) document.getElementById('view-dashboard-actions').style.display = 'block';
         if (document.getElementById('view-users')) document.getElementById('view-users').style.display = 'block';
-        if (document.getElementById('view-analytics')) document.getElementById('view-analytics').style.display = 'grid';
+        if (document.getElementById('view-analytics-summary')) document.getElementById('view-analytics-summary').style.display = 'grid';
         if (document.getElementById('view-logs')) document.getElementById('view-logs').style.display = 'block';
     } else if (section === 'users') {
         if (document.getElementById('view-users')) document.getElementById('view-users').style.display = 'block';
@@ -1142,6 +1455,8 @@ function showSection(section) {
         if (document.getElementById('view-papers')) document.getElementById('view-papers').style.display = 'block';
     } else if (section === 'reviews') {
         if (document.getElementById('view-reviews')) document.getElementById('view-reviews').style.display = 'block';
+    } else if (section === 'analytics') {
+        if (document.getElementById('view-analytics-detail')) document.getElementById('view-analytics-detail').style.display = 'block';
     }
 }
 
