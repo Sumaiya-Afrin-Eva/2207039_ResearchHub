@@ -28,13 +28,16 @@ $pending_count = $stats_row ? (int)$stats_row['PENDING_COUNT'] : 0;
 
 // 2. Fetch recent submissions
 $submissions_sql = "
-    SELECT TITLE, 'Paper' AS TYPE, STATUS, TO_CHAR(SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE, SUBMISSION_DATE
+    SELECT PAPER_ID AS ID, TITLE, 'Paper' AS TYPE, STATUS, TO_CHAR(SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE, SUBMISSION_DATE,
+           CAST(NULL AS VARCHAR2(4000)) AS ABSTRACT, CAST(NULL AS NUMBER) AS SUPERVISOR_ID, CAST(NULL AS NUMBER) AS VERSION_NO
     FROM PAPERS
     WHERE RESEARCHER_ID = :researcher_id
     UNION ALL
-    SELECT TITLE, 'Thesis' AS TYPE, STATUS, TO_CHAR(SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE, SUBMISSION_DATE
-    FROM THESES
-    WHERE RESEARCHER_ID = :researcher_id
+    SELECT T.THESIS_ID AS ID, T.TITLE, 'Thesis' AS TYPE, T.STATUS, TO_CHAR(T.SUBMISSION_DATE, 'DD Mon YYYY') AS SUB_DATE, T.SUBMISSION_DATE,
+           DBMS_LOB.SUBSTR(T.ABSTRACT, 4000, 1) AS ABSTRACT, TS.SUPERVISOR_ID, T.VERSION_NO
+    FROM THESES T
+    LEFT JOIN THESIS_SUPERVISIONS TS ON T.THESIS_ID = TS.THESIS_ID AND TS.SUPERVISOR_TYPE = 'PRIMARY'
+    WHERE T.RESEARCHER_ID = :researcher_id
     ORDER BY SUBMISSION_DATE DESC
 ";
 $submissions_stid = oci_parse($conn, $submissions_sql);
@@ -623,14 +626,16 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
                     <tr>
                         <th>Title</th>
                         <th>Type</th>
+                        <th>Version</th>
                         <th>Status</th>
                         <th>Submission Date</th>
+                        <th>Action</th>
                     </tr>
                     </thead>
                     <tbody>
                     <?php if (empty($all_submissions)): ?>
                         <tr>
-                            <td colspan="4" style="text-align:center; color:#94a3b8; font-style:italic;">No submissions found.</td>
+                            <td colspan="6" style="text-align:center; color:#94a3b8; font-style:italic;">No submissions found.</td>
                         </tr>
                     <?php else: ?>
                         <?php 
@@ -643,10 +648,28 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
                             }
                         ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($row['TITLE']); ?></td>
+                                <td style="font-weight: 600; color: #0f172a;"><?php echo htmlspecialchars($row['TITLE']); ?></td>
                                 <td><?php echo htmlspecialchars($row['TYPE']); ?></td>
+                                <td>
+                                    <?php echo ($row['TYPE'] === 'Thesis') ? 'v' . htmlspecialchars($row['VERSION_NO']) : '-'; ?>
+                                </td>
                                 <td><span class="<?php echo $status_class; ?>"><?php echo htmlspecialchars($row['STATUS']); ?></span></td>
                                 <td><?php echo htmlspecialchars($row['SUB_DATE']); ?></td>
+                                <td>
+                                    <?php if ($row['TYPE'] === 'Thesis'): ?>
+                                        <button class="edit-btn" 
+                                                style="padding: 6px 12px; font-weight: 600; font-size: 13px; color: white; background: #2563eb; border: none; border-radius: 6px; cursor: pointer; transition: background 0.2s;"
+                                                onclick="openEditThesisModal(this)"
+                                                data-thesis-id="<?php echo (int)$row['ID']; ?>"
+                                                data-title="<?php echo htmlspecialchars($row['TITLE'], ENT_QUOTES); ?>"
+                                                data-abstract="<?php echo htmlspecialchars($row['ABSTRACT'] ?? '', ENT_QUOTES); ?>"
+                                                data-supervisor-id="<?php echo (int)$row['SUPERVISOR_ID']; ?>">
+                                            New Version
+                                        </button>
+                                    <?php else: ?>
+                                        -
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
@@ -854,6 +877,50 @@ if (isset($_GET['keyword']) || isset($_GET['year_filter'])) {
     </div>
 </div>
 
+<!-- ── Edit Thesis Modal ────────────────────────────────── -->
+<div class="modal-overlay" id="editThesisModal">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h3>Submit New Thesis Version</h3>
+            <button class="close-btn" onclick="closeEditThesisModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form class="modal-form" action="../php/edit_thesis.php" method="POST">
+                <input type="hidden" id="edit_thesis_id" name="thesis_id">
+                <div class="form-group">
+                    <label for="edit_thesis_title">Thesis Title</label>
+                    <input type="text" id="edit_thesis_title" name="title" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_thesis_abstract">Abstract</label>
+                    <textarea id="edit_thesis_abstract" name="abstract" rows="6" style="padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s; font-family: inherit;" required></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_thesis_supervisor_id">Primary Supervisor</label>
+                    <select id="edit_thesis_supervisor_id" name="supervisor_id" required>
+                        <option value="">Select Supervisor</option>
+                        <?php 
+                        oci_execute($supervisors_stid);
+                        while ($sup = oci_fetch_assoc($supervisors_stid)): 
+                        ?>
+                            <option value="<?php echo htmlspecialchars($sup['USER_ID']); ?>">
+                                <?php echo htmlspecialchars($sup['FIRST_NAME'] . ' ' . $sup['LAST_NAME']); ?>
+                            </option>
+                        <?php endwhile; ?>
+                    </select>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn-cancel" onclick="closeEditThesisModal()">Cancel</button>
+                    <button type="submit" class="btn-submit">Submit Version</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script>
 function openAddPaperModal() {
     document.getElementById('addPaperModal').classList.add('active');
@@ -866,6 +933,17 @@ function openAddThesisModal() {
 }
 function closeAddThesisModal() {
     document.getElementById('addThesisModal').classList.remove('active');
+}
+function openEditThesisModal(btn) {
+    var d = btn.dataset;
+    document.getElementById('edit_thesis_id').value = d.thesisId;
+    document.getElementById('edit_thesis_title').value = d.title;
+    document.getElementById('edit_thesis_abstract').value = d.abstract;
+    document.getElementById('edit_thesis_supervisor_id').value = d.supervisorId;
+    document.getElementById('editThesisModal').classList.add('active');
+}
+function closeEditThesisModal() {
+    document.getElementById('editThesisModal').classList.remove('active');
 }
 function showSection(sectionId) {
     document.getElementById('home-section').style.display = 'none';
