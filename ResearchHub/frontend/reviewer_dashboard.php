@@ -212,6 +212,30 @@ $pending_assignments = [];
 while ($row = oci_fetch_assoc($pending_list_stid)) {
     $pending_assignments[] = $row;
 }
+
+// 5. Fetch review history
+$history_sql = "
+    SELECT R.REVIEW_ID,
+           P.TITLE AS PAPER_TITLE,
+           U.FIRST_NAME || ' ' || U.LAST_NAME AS AUTHOR_NAME,
+           R.SCORE,
+           R.RECOMMENDATION,
+           DBMS_LOB.SUBSTR(R.COMMENTS, 4000, 1) AS COMMENTS,
+           TO_CHAR(R.REVIEW_DATE, 'DD Mon YYYY HH24:MI:SS') AS REVIEW_TIME
+    FROM REVIEWS R
+    JOIN REVIEW_ASSIGNMENTS RA ON R.ASSIGNMENT_ID = RA.ASSIGNMENT_ID
+    JOIN PAPERS P ON RA.PAPER_ID = P.PAPER_ID
+    JOIN USERS U ON P.RESEARCHER_ID = U.USER_ID
+    WHERE RA.REVIEWER_ID = :reviewer_id
+    ORDER BY R.REVIEW_DATE DESC
+";
+$history_stid = oci_parse($conn, $history_sql);
+oci_bind_by_name($history_stid, ':reviewer_id', $reviewer_id);
+oci_execute($history_stid);
+$review_history = [];
+while ($row = oci_fetch_assoc($history_stid)) {
+    $review_history[] = $row;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -262,33 +286,14 @@ while ($row = oci_fetch_assoc($pending_list_stid)) {
                 </a>
             </li>
 
-            <li>
-                <a href="#">
+            <li id="nav-history">
+                <a href="#" onclick="showSection('history'); return false;">
                     <i class="fas fa-history"></i>
                     Review History
                 </a>
             </li>
 
-            <li>
-                <a href="#">
-                    <i class="fas fa-comments"></i>
-                    Feedback
-                </a>
-            </li>
 
-            <li>
-                <a href="#">
-                    <i class="fas fa-chart-line"></i>
-                    Statistics
-                </a>
-            </li>
-
-            <li>
-                <a href="#">
-                    <i class="fas fa-user"></i>
-                    Profile
-                </a>
-            </li>
 
             <li>
                 <a href="../auth/logout.php">
@@ -350,11 +355,7 @@ while ($row = oci_fetch_assoc($pending_list_stid)) {
                 <p>Pending Reviews</p>
             </div>
 
-            <div class="card">
-                <i class="fas fa-star"></i>
-                <h3><?php echo $avg_score; ?></h3>
-                <p>Average Rating</p>
-            </div>
+
 
         </section>
 
@@ -381,10 +382,7 @@ while ($row = oci_fetch_assoc($pending_list_stid)) {
                     <h4>Add Feedback</h4>
                 </div>
 
-                <div class="action-box">
-                    <i class="fas fa-chart-bar"></i>
-                    <h4>Review Reports</h4>
-                </div>
+
 
             </div>
 
@@ -428,15 +426,7 @@ while ($row = oci_fetch_assoc($pending_list_stid)) {
             </table>
         </section>
 
-        <!-- Review Performance -->
-        <section class="performance-section">
-            <h3>Review Completion Rate</h3>
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: <?php echo $completion_rate; ?>%;">
-                    <?php echo $completion_rate; ?>%
-                </div>
-            </div>
-        </section>
+
 
         </div> <!-- End of home-section -->
 
@@ -539,6 +529,57 @@ while ($row = oci_fetch_assoc($pending_list_stid)) {
             </section>
         </div>
 
+        <!-- Review History Section -->
+        <div id="history-section" style="display: none;">
+            <section class="table-section">
+                <div class="section-header">
+                    <h3>Review History</h3>
+                </div>
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Review ID</th>
+                        <th>Paper Title</th>
+                        <th>Author</th>
+                        <th>Score</th>
+                        <th>Recommendation</th>
+                        <th>Comments</th>
+                        <th>Review Date</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php if (empty($review_history)): ?>
+                        <tr>
+                            <td colspan="7" style="text-align:center; color:#94a3b8; font-style:italic;">No reviews completed yet.</td>
+                        </tr>
+                    <?php else: ?>
+                        <?php foreach ($review_history as $rev): ?>
+                            <tr>
+                                <td><?php echo (int)$rev['REVIEW_ID']; ?></td>
+                                <td style="font-weight: 600; color: #0f172a;"><?php echo htmlspecialchars($rev['PAPER_TITLE']); ?></td>
+                                <td><?php echo htmlspecialchars($rev['AUTHOR_NAME']); ?></td>
+                                <td><strong style="color: #2563eb;"><?php echo (int)$rev['SCORE']; ?>/10</strong></td>
+                                <td>
+                                    <span class="<?php 
+                                        if ($rev['RECOMMENDATION'] === 'ACCEPT') echo 'completed';
+                                        elseif ($rev['RECOMMENDATION'] === 'REJECT') echo 'pending';
+                                        else echo 'reviewing';
+                                    ?>">
+                                        <?php echo htmlspecialchars($rev['RECOMMENDATION']); ?>
+                                    </span>
+                                </td>
+                                <td style="max-width: 250px; font-size: 14px; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($rev['COMMENTS']); ?>">
+                                    <?php echo htmlspecialchars($rev['COMMENTS']); ?>
+                                </td>
+                                <td><?php echo htmlspecialchars($rev['REVIEW_TIME']); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </section>
+        </div>
+
     </main>
 
 </div>
@@ -550,11 +591,17 @@ function showSection(sectionId) {
     if (document.getElementById('submit-review-section')) {
         document.getElementById('submit-review-section').style.display = 'none';
     }
+    if (document.getElementById('history-section')) {
+        document.getElementById('history-section').style.display = 'none';
+    }
     
     document.getElementById('nav-home').classList.remove('active');
     document.getElementById('nav-assigned').classList.remove('active');
     if (document.getElementById('nav-submit-review')) {
         document.getElementById('nav-submit-review').classList.remove('active');
+    }
+    if (document.getElementById('nav-history')) {
+        document.getElementById('nav-history').classList.remove('active');
     }
     
     if (sectionId === 'home') {
@@ -569,6 +616,13 @@ function showSection(sectionId) {
         }
         if (document.getElementById('nav-submit-review')) {
             document.getElementById('nav-submit-review').classList.add('active');
+        }
+    } else if (sectionId === 'history') {
+        if (document.getElementById('history-section')) {
+            document.getElementById('history-section').style.display = 'block';
+        }
+        if (document.getElementById('nav-history')) {
+            document.getElementById('nav-history').classList.add('active');
         }
     }
 }
